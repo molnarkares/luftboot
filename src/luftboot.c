@@ -131,8 +131,8 @@ static char serial_no[24+8];
 
 static const char *usb_strings[] = {
 	"x",
-	"Transition Robotics Inc.",
-	"Lisa/M (Upgrade) " VERSION,
+	"BME UAV",
+	"Papilot " VERSION,
 	serial_no,
 	/* This string is used by ST Microelectronics' DfuSe utility */
 	"@Internal Flash   /0x08000000/4*002Ka,124*002Kg"
@@ -277,9 +277,9 @@ static inline void gpio_init(void)
 						  RCC_APB2ENR_IOPCEN |
 						  RCC_APB2ENR_AFIOEN);
 	/* LED1 */
-	/* Set GPIO8 (in GPIO port A) to 'output push-pull'. */
+	/* Set GPIO10 (in GPIO port A) to 'output push-pull'. */
 	gpio_set_mode(GPIOA, GPIO_MODE_OUTPUT_50_MHZ,
-			GPIO_CNF_OUTPUT_PUSHPULL, GPIO8);
+			GPIO_CNF_OUTPUT_PUSHPULL, GPIO10);
 
 	/* JTAG_TRST */
 	/* Set GPIO4 (in GPIO port B) to 'output push-pull'. */
@@ -289,14 +289,14 @@ static inline void gpio_init(void)
 	AFIO_MAPR |= AFIO_MAPR_SWJ_CFG_FULL_SWJ_NO_JNTRST;
 
 	/* LED2, ADC4, ADC6 */
-	/* Set GPIO15, GPIO5, GPIO2 (in GPIO port C) to 'output push-pull'. */
+	/* Set GPIO15, GPIO5 (in GPIO port C) to 'output push-pull'. */
 	gpio_set_mode(GPIOC, GPIO_MODE_OUTPUT_50_MHZ,
-			GPIO_CNF_OUTPUT_PUSHPULL, GPIO15 | GPIO5 | GPIO2);
+			GPIO_CNF_OUTPUT_PUSHPULL, GPIO15 | GPIO5);
 
 	/* Preconfigure the LEDs. */
-	gpio_set(GPIOA, GPIO8);
+	gpio_set(GPIOA, GPIO10);
 	gpio_set(GPIOB, GPIO4);
-	gpio_set(GPIOC, GPIO15 | GPIO5 | GPIO2);
+	gpio_set(GPIOC, GPIO15 | GPIO5);
 }
 
 void led_set(int id, int on)
@@ -304,13 +304,13 @@ void led_set(int id, int on)
 	if (on) {
 		switch (id) {
 			case 0:
-				gpio_clear(GPIOA, GPIO8); /* LED1 On */
+				gpio_clear(GPIOA, GPIO10); /* LED1 On */
 				break;
 			case 1:
 				gpio_clear(GPIOB, GPIO4); /* JTAG_TRST On */
 				break;
 			case 2:
-				gpio_clear(GPIOC, GPIO2); /* ADC6 On */
+				/* gpio_clear(GPIOC, GPIO2); */ /* ADC6 On */
 				break;
 			case 3:
 				gpio_clear(GPIOC, GPIO5); /* ADC4 On */
@@ -322,13 +322,13 @@ void led_set(int id, int on)
 	} else {
 		switch (id) {
 			case 0:
-				gpio_set(GPIOA, GPIO8); /* LED1 On */
+				gpio_set(GPIOA, GPIO10); /* LED1 On */
 				break;
 			case 1:
 				gpio_set(GPIOB, GPIO4); /* JTAG_TRST On */
 				break;
 			case 2:
-				gpio_set(GPIOC, GPIO2); /* ADC6 On */
+				/*gpio_set(GPIOC, GPIO2); *//* ADC6 On */
 				break;
 			case 3:
 				gpio_set(GPIOC, GPIO5); /* ADC4 On */
@@ -446,8 +446,8 @@ int main(void)
 #pragma message "Luftboot using 8MHz internal RC oscillator to PLL it to 48MHz."
 	rcc_clock_setup_in_hsi_out_48mhz();
 #else
-#pragma message "Luftboot using 12MHz external clock to PLL it to 72MHz."
-	rcc_clock_setup_in_hse_12mhz_out_72mhz();
+#pragma message "Luftboot using 8MHz external clock to PLL it to 72MHz."
+	rcc_clock_setup_in_hse_8mhz_out_72mhz();
 #endif
 
 	rcc_peripheral_enable_clock(&RCC_AHBENR, RCC_AHBENR_OTGFSEN);
@@ -461,7 +461,8 @@ int main(void)
 
 	get_dev_unique_id(serial_no);
 
-	usbd_device *device = usbd_init(&stm32f107_usb_driver, &dev, &config, usb_strings);
+	usbd_device *device = usbd_init(&stm32f107_usb_driver, &dev, &config, usb_strings,4);
+
 	usbd_set_control_buffer_size(device, sizeof(usbd_control_buffer));
 	usbd_register_control_callback( device,
 				USB_REQ_TYPE_CLASS | USB_REQ_TYPE_INTERFACE,
