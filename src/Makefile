@@ -16,6 +16,7 @@ OBJCOPY = $(CROSS_COMPILE)objcopy
 LIBOPENCM3 ?= $(TOOLCHAIN_DIR)/..
 OOCD_INTERFACE  ?= jlink
 OOCD_TARGET     ?= stm32f1x
+OOCD_BOARD      ?= papilot
 OOCD = openocd
 GDB = $(TOOLCHAIN_DIR)/arm-none-eabi-gdb
 BMP_PORT =
@@ -58,10 +59,10 @@ ifeq ($(BMP_PORT),)
 flash: luftboot.hex
 	@echo "  OOCD  luftboot.hex"
 	$(Q)$(OOCD) -f interface/$(OOCD_INTERFACE).cfg \
-		-f target/$(OOCD_TARGET).cfg \
+		-f board/$(OOCD_BOARD).cfg \
 		-c init \
-		-c "reset init" \
-		-c "flash write_image erase luftboot.hex" \
+		-c "reset halt" \
+		-c "flash write_image erase unlock luftboot.hex" \
 		-c reset \
 		-c shutdown
 else
