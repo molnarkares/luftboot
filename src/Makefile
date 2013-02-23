@@ -20,6 +20,7 @@ OOCD_BOARD      ?= papilot
 OOCD = openocd
 GDB = $(TOOLCHAIN_DIR)/arm-none-eabi-gdb
 BMP_PORT =
+
 VERSION = V1.1
 DEV_SERIAL = NSERIAL
 
