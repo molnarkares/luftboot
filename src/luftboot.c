@@ -26,6 +26,15 @@
 #include <libopencm3/cm3/scb.h>
 #include <libopencm3/usb/usbd.h>
 #include <libopencm3/usb/dfu.h>
+#include <libopencm3/stm32/can.h>
+//#define CAN_GW
+
+#define LED1_PORT	GPIOA
+#define LED1_PIN	GPIO10
+#define LED2_PORT	GPIOC
+#define LED2_PIN	GPIO15
+#define USBDETECT_PORT	GPIOA
+#define USBDETECT_PIN	GPIO9
 
 #ifndef VERSION
 #define VERSION         ""
@@ -56,7 +65,18 @@ u8 usbd_control_buffer[SECTOR_SIZE];
 
 static enum dfu_state usbdfu_state = STATE_DFU_IDLE;
 
-inline char *get_dev_unique_id(char *serial_no);
+static void gpio_init(void);
+static void gpio_uninit(void);
+static bool gpio_force_bootloader(void);
+static void led_advance(void);
+static void led_set(int id, int on);
+
+char *get_dev_unique_id(char *serial_no);
+static u8 usbdfu_getstatus(u32 *bwPollTimeout);
+static void usbdfu_getstatus_complete(usbd_device *device, struct usb_setup_data *req);
+static int usbdfu_control_request(usbd_device *device, struct usb_setup_data *req, u8 **buf,
+		u16 *len, void (**complete)(usbd_device *device, struct usb_setup_data *req));
+
 
 static struct {
 	u8 buf[sizeof(usbd_control_buffer)];
@@ -130,7 +150,7 @@ const struct usb_config_descriptor config = {
 static char serial_no[24+8];
 
 static const char *usb_strings[] = {
-	"x",
+	"Lyorak",
 	"BME UAV",
 	"Papilot " VERSION,
 	serial_no,
@@ -269,8 +289,9 @@ static int usbdfu_control_request(usbd_device *device, struct usb_setup_data *re
 	return 0;
 }
 
-static inline void gpio_init(void)
+static void gpio_init(void)
 {
+	rcc_peripheral_enable_clock(&RCC_AHBENR, RCC_AHBENR_OTGFSEN);
 	/* Enable GPIOA, GPIOB, GPIOC, and AFIO clocks. */
 	rcc_peripheral_enable_clock(&RCC_APB2ENR, RCC_APB2ENR_IOPAEN |
 						  RCC_APB2ENR_IOPBEN |
@@ -278,152 +299,110 @@ static inline void gpio_init(void)
 						  RCC_APB2ENR_AFIOEN);
 	/* LED1 */
 	/* Set GPIO10 (in GPIO port A) to 'output push-pull'. */
-	gpio_set_mode(GPIOA, GPIO_MODE_OUTPUT_50_MHZ,
-			GPIO_CNF_OUTPUT_PUSHPULL, GPIO10);
+	gpio_set_mode(LED1_PORT, GPIO_MODE_OUTPUT_50_MHZ,
+			GPIO_CNF_OUTPUT_PUSHPULL, LED1_PIN);
 
-	/* JTAG_TRST */
-	/* Set GPIO4 (in GPIO port B) to 'output push-pull'. */
-	gpio_set_mode(GPIOB, GPIO_MODE_OUTPUT_50_MHZ,
-			GPIO_CNF_OUTPUT_PUSHPULL, GPIO4);
 
-	AFIO_MAPR |= AFIO_MAPR_SWJ_CFG_FULL_SWJ_NO_JNTRST;
-
-	/* LED2, ADC4, ADC6 */
-	/* Set GPIO15, GPIO5 (in GPIO port C) to 'output push-pull'. */
-	gpio_set_mode(GPIOC, GPIO_MODE_OUTPUT_50_MHZ,
-			GPIO_CNF_OUTPUT_PUSHPULL, GPIO15 | GPIO5);
+	/* LED2*/
+	/* Set GPIO15 (in GPIO port C) to 'output push-pull'. */
+	gpio_set_mode(LED2_PORT, GPIO_MODE_OUTPUT_50_MHZ,
+			GPIO_CNF_OUTPUT_PUSHPULL, LED2_PIN);
 
 	/* Preconfigure the LEDs. */
-	gpio_set(GPIOA, GPIO10);
-	gpio_set(GPIOB, GPIO4);
-	gpio_set(GPIOC, GPIO15 | GPIO5);
+	gpio_set(LED1_PORT, LED1_PIN);
+	gpio_set(LED2_PORT, LED2_PIN);
+
+	/* USB detect pin */
+	gpio_clear(USBDETECT_PORT, USBDETECT_PIN);
+	gpio_set_mode(USBDETECT_PORT, GPIO_MODE_INPUT,
+				GPIO_CNF_INPUT_PULL_UPDOWN, USBDETECT_PIN);
+	gpio_clear(USBDETECT_PORT, USBDETECT_PIN);
+
+
 }
 
-void led_set(int id, int on)
+static void gpio_uninit(void)
+{
+	/* Enable GPIOA, GPIOB, GPIOC, and AFIO clocks. */
+
+	/* LED1 */
+	gpio_set_mode(LED1_PORT, GPIO_MODE_INPUT,
+			GPIO_CNF_INPUT_FLOAT, LED1_PIN);
+
+
+	/* LED2*/
+	gpio_set_mode(LED2_PORT, GPIO_MODE_INPUT,
+			GPIO_CNF_INPUT_FLOAT, LED2_PIN);
+
+	/* USB detect */
+	gpio_set_mode(USBDETECT_PORT, GPIO_MODE_INPUT,
+				GPIO_CNF_INPUT_FLOAT, USBDETECT_PIN);
+
+	rcc_peripheral_disable_clock(&RCC_APB2ENR, RCC_APB2ENR_IOPAEN |
+						  RCC_APB2ENR_IOPBEN |
+						  RCC_APB2ENR_IOPCEN |
+						  RCC_APB2ENR_AFIOEN);
+}
+
+
+static void led_set(int id, int on)
 {
 	if (on) {
 		switch (id) {
 			case 0:
-				gpio_clear(GPIOA, GPIO10); /* LED1 On */
+				gpio_clear(LED1_PORT, LED1_PIN); /* LED1 On */
 				break;
 			case 1:
-				gpio_clear(GPIOB, GPIO4); /* JTAG_TRST On */
+				gpio_clear(LED2_PORT, LED2_PIN); /* LED2 On */
 				break;
-			case 2:
-				/* gpio_clear(GPIOC, GPIO2); */ /* ADC6 On */
-				break;
-			case 3:
-				gpio_clear(GPIOC, GPIO5); /* ADC4 On */
-				break;
-			case 4:
-				gpio_clear(GPIOC, GPIO15); /* LED2 On */
+			default:
 				break;
 		}
 	} else {
 		switch (id) {
 			case 0:
-				gpio_set(GPIOA, GPIO10); /* LED1 On */
+				gpio_set(LED1_PORT, LED1_PIN); /* LED1 Off */
 				break;
 			case 1:
-				gpio_set(GPIOB, GPIO4); /* JTAG_TRST On */
+				gpio_set(LED2_PORT, LED2_PIN); /* LED2 Off */
 				break;
-			case 2:
-				/*gpio_set(GPIOC, GPIO2); *//* ADC6 On */
-				break;
-			case 3:
-				gpio_set(GPIOC, GPIO5); /* ADC4 On */
-				break;
-			case 4:
-				gpio_set(GPIOC, GPIO15); /* LED2 On */
+			default:
 				break;
 		}
 	}
 }
 
-static inline void led_advance(void)
+static void led_advance(void)
 {
 	static int state = 0;
-
-	if (state < 5) {
-		led_set(state, 1);
-	} else if (state < 10) {
-		led_set(state - 5, 0);
-	} else if (state < 15) {
-		led_set(14 - state, 1);
-	} else if (state < 20) {
-		led_set(19 - state, 0);
-	}
-
+	led_set((state >>1)&0x01,(state & 0x01));
 	state++;
-	if(state == 20) state = 0;
+	if(state == 4) state = 0;
 
 }
 
-bool gpio_force_bootloader()
+static bool gpio_force_bootloader(void)
 {
-	/* Force the bootloader if the GPIO state was changed to indicate this
-	      in the application (state remains after a core-only reset)
-	   Skip bootloader if the "skip bootloader" pin is grounded
-	   Force bootloader if the USB vbus is powered
-	   Skip bootloader otherwise */
+	bool retval = false;
 
-	/* Check if we are being forced by the payload. */
-	if (((GPIO_CRL(GPIOC) & 0x3) == 0x0) &&
-	    ((GPIO_CRL(GPIOC) & 0xC) == 0x8) &&
-	    ((GPIO_IDR(GPIOC) & 0x1) == 0x0)){
-		return true;
-	} else {
-		/* Enable clock for the "skip bootloader" pin bank and check for it */
-		rcc_peripheral_enable_clock(&RCC_APB2ENR, RCC_APB2ENR_IOPCEN);
-		gpio_set_mode(GPIOC, GPIO_MODE_INPUT, GPIO_CNF_INPUT_PULL_UPDOWN, GPIO0);
-		gpio_set(GPIOC, GPIO0);
-
-		if(!gpio_get(GPIOC, GPIO0)) {
-			/* If pin grounded, disable the pin bank and return */
-			gpio_set_mode(GPIOC, GPIO_MODE_INPUT, GPIO_CNF_INPUT_FLOAT, GPIO0);
-			rcc_peripheral_disable_clock(&RCC_APB2ENR, RCC_APB2ENR_IOPCEN);
-			return false;
-		}
-		/* Disable the pin bank */
-		gpio_set_mode(GPIOC, GPIO_MODE_INPUT, GPIO_CNF_INPUT_FLOAT, GPIO0);
-		rcc_peripheral_disable_clock(&RCC_APB2ENR, RCC_APB2ENR_IOPCEN);
-
-		/* Enable clock for the "USB vbus" pin bank and check for it */
-		rcc_peripheral_enable_clock(&RCC_APB2ENR, RCC_APB2ENR_IOPAEN);
-		gpio_set_mode(GPIOA, GPIO_MODE_INPUT, GPIO_CNF_INPUT_PULL_UPDOWN, GPIO9);
-		gpio_clear(GPIOA, GPIO9);
-
-		if(gpio_get(GPIOA, GPIO9)) {
-			/* If vbus pin high, disable the pin bank and return */
-			gpio_set_mode(GPIOA, GPIO_MODE_INPUT, GPIO_CNF_INPUT_FLOAT, GPIO9);
-			rcc_peripheral_disable_clock(&RCC_APB2ENR, RCC_APB2ENR_IOPAEN);
-			return true;
-		}
-		/* Disable the pin bank */
-		gpio_set_mode(GPIOA, GPIO_MODE_INPUT, GPIO_CNF_INPUT_FLOAT, GPIO9);
-		rcc_peripheral_disable_clock(&RCC_APB2ENR, RCC_APB2ENR_IOPAEN);
+	if(gpio_get(USBDETECT_PORT, USBDETECT_PIN)) {
+		/* If vbus pin high, disable the pin bank and return */
+		retval = true;
 	}
-
-	return false;
+	return retval;
 }
 
 int main(void)
 {
+
+
+	gpio_init();
+
 	/* Check if the application is valid. */
 	if ((*(volatile u32 *)APP_ADDRESS & 0x2FFE0000) == 0x20000000) {
-		/* Check if we have just downloaded the new code by looking at the DATA0 option register
-		 * or that we do NOT want to force the bootloader */
-		if (((FLASH_OBR & 0x3FC00) == 0x00) || (!gpio_force_bootloader() && 1)) {
-			/* If we DID just download new code, reset that data register */
-			if((FLASH_OBR & 0x3FC00) == 0x00) {
-			    flash_unlock();
-			    FLASH_CR = 0;
-			    flash_erase_option_bytes();
-			    flash_program_option_bytes(FLASH_OBP_RDP, 0x5AA5); 		// Flash read unprotect
-			    flash_program_option_bytes(FLASH_OBP_WRP10, 0x03FC);	// Write protect first 4 flash pages
-			    flash_program_option_bytes(FLASH_OBP_DATA0, 0x00FF); 	// Write data register that we downloaded the code and want to jump the app
-			    flash_lock();
-			}
+		if(!gpio_force_bootloader())
+		{
+			gpio_uninit();
 			/* Set vector table base address. */
 			SCB_VTOR = APP_ADDRESS & 0xFFFF;
 			/* Initialise master stack pointer. */
@@ -433,15 +412,40 @@ int main(void)
 			(*(void (**)())(APP_ADDRESS + 4))();
 	    }
 	}
+#ifdef CAN_GW
+	can_reset(CAN1);
+	if (can_init(CAN1,
+	               false,           /* TTCM: Time triggered comm mode? */
+	               true,            /* ABOM: Automatic bus-off management? */
+	               false,           /* AWUM: Automatic wakeup mode? */
+	               false,           /* NART: No automatic retransmission? */
+	               false,           /* RFLM: Receive FIFO locked mode? */
+	               false,           /* TXFP: Transmit FIFO priority? */
+	               CAN_BTR_SJW_1TQ,
+	               CAN_BTR_TS1_10TQ,
+	               CAN_BTR_TS2_7TQ,
+	               2,               /* BRP+1: Baud rate prescaler */
+	               false,           /* loopback mode */
+	               false))          /* silent mode */
+	  {
+	    /* TODO we need something somewhere where we can leave a note
+	     * that CAN was unable to initialize. Just like any other
+	     * driver should...
+	     */
 
-	if ((FLASH_WRPR & 0x03) != 0x00) {
-		flash_unlock();
-		FLASH_CR = 0;
-		flash_erase_option_bytes();
-		flash_program_option_bytes(FLASH_OBP_RDP, FLASH_OBP_RDP_KEY);
-		flash_program_option_bytes(FLASH_OBP_WRP10, 0x03FC);
-	}
+	    can_reset(CAN1);
 
+	    return 0;
+	  }
+
+	  /* CAN filter 0 init. */
+	  can_filter_id_mask_32bit_init(CAN1,
+	                                0,     /* Filter ID */
+	                                0,     /* CAN ID */
+	                                0,     /* CAN ID mask */
+	                                0,     /* FIFO assignment (here: FIFO0) */
+	                                true); /* Enable the filter. */
+#endif
 #if LUFTBOOT_USE_48MHZ_INTERNAL_OSC
 #pragma message "Luftboot using 8MHz internal RC oscillator to PLL it to 48MHz."
 	rcc_clock_setup_in_hsi_out_48mhz();
@@ -450,9 +454,6 @@ int main(void)
 	rcc_clock_setup_in_hse_8mhz_out_72mhz();
 #endif
 
-	rcc_peripheral_enable_clock(&RCC_AHBENR, RCC_AHBENR_OTGFSEN);
-
-	gpio_init();
 
 	systick_set_clocksource(STK_CTRL_CLKSOURCE_AHB_DIV8);
 	systick_set_reload(900000);
@@ -473,7 +474,7 @@ int main(void)
 		usbd_poll(device);
 }
 
-inline char *get_dev_unique_id(char *s)
+char *get_dev_unique_id(char *s)
 {
 	volatile uint8_t *unique_id = (volatile uint8_t *)0x1FFFF7E8;
 	int i;
