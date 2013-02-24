@@ -86,6 +86,7 @@ if __name__ == "__main__":
 		if man == "Black Sphere Technologies": break
 		if man == "Transition Robotics Inc.": break
 		if man == "STMicroelectronics": break
+		if man == "BME UAV": break
 
 	print "Device %s: ID %04x:%04x %s - %s - %s" % (dfudev.dev.filename, 
 		dfudev.dev.idVendor, dfudev.dev.idProduct, man, product, serial)
