@@ -27,12 +27,13 @@
 #include <libopencm3/usb/usbd.h>
 #include <libopencm3/usb/dfu.h>
 #include <libopencm3/stm32/can.h>
-//#define CAN_GW
 
-#define LED1_PORT	GPIOA
-#define LED1_PIN	GPIO10
-#define LED2_PORT	GPIOC
-#define LED2_PIN	GPIO15
+#define LED1_PORT		GPIOA
+#define LED1_PIN		GPIO10
+
+#define LED2_PORT		GPIOC
+#define LED2_PIN		GPIO15
+
 #define USBDETECT_PORT	GPIOA
 #define USBDETECT_PIN	GPIO9
 
@@ -77,6 +78,7 @@ static void usbdfu_getstatus_complete(usbd_device *device, struct usb_setup_data
 static int usbdfu_control_request(usbd_device *device, struct usb_setup_data *req, u8 **buf,
 		u16 *len, void (**complete)(usbd_device *device, struct usb_setup_data *req));
 
+static void gw_can_init(void);
 
 static struct {
 	u8 buf[sizeof(usbd_control_buffer)];
@@ -412,40 +414,6 @@ int main(void)
 			(*(void (**)())(APP_ADDRESS + 4))();
 	    }
 	}
-#ifdef CAN_GW
-	can_reset(CAN1);
-	if (can_init(CAN1,
-	               false,           /* TTCM: Time triggered comm mode? */
-	               true,            /* ABOM: Automatic bus-off management? */
-	               false,           /* AWUM: Automatic wakeup mode? */
-	               false,           /* NART: No automatic retransmission? */
-	               false,           /* RFLM: Receive FIFO locked mode? */
-	               false,           /* TXFP: Transmit FIFO priority? */
-	               CAN_BTR_SJW_1TQ,
-	               CAN_BTR_TS1_10TQ,
-	               CAN_BTR_TS2_7TQ,
-	               2,               /* BRP+1: Baud rate prescaler */
-	               false,           /* loopback mode */
-	               false))          /* silent mode */
-	  {
-	    /* TODO we need something somewhere where we can leave a note
-	     * that CAN was unable to initialize. Just like any other
-	     * driver should...
-	     */
-
-	    can_reset(CAN1);
-
-	    return 0;
-	  }
-
-	  /* CAN filter 0 init. */
-	  can_filter_id_mask_32bit_init(CAN1,
-	                                0,     /* Filter ID */
-	                                0,     /* CAN ID */
-	                                0,     /* CAN ID mask */
-	                                0,     /* FIFO assignment (here: FIFO0) */
-	                                true); /* Enable the filter. */
-#endif
 #if LUFTBOOT_USE_48MHZ_INTERNAL_OSC
 #pragma message "Luftboot using 8MHz internal RC oscillator to PLL it to 48MHz."
 	rcc_clock_setup_in_hsi_out_48mhz();
@@ -454,6 +422,7 @@ int main(void)
 	rcc_clock_setup_in_hse_8mhz_out_72mhz();
 #endif
 
+	gw_can_init();
 
 	systick_set_clocksource(STK_CTRL_CLKSOURCE_AHB_DIV8);
 	systick_set_reload(900000);
@@ -500,3 +469,30 @@ void sys_tick_handler()
 {
 	led_advance();
 }
+
+static void gw_can_init(void)
+{
+	can_reset(CAN1);
+	can_init(CAN1,
+			   false,           /* TTCM: Time triggered comm mode? */
+			   true,            /* ABOM: Automatic bus-off management? */
+			   false,           /* AWUM: Automatic wakeup mode? */
+			   false,           /* NART: No automatic retransmission? */
+			   false,           /* RFLM: Receive FIFO locked mode? */
+			   false,           /* TXFP: Transmit FIFO priority? */
+			   CAN_BTR_SJW_1TQ,
+			   CAN_BTR_TS1_10TQ,
+			   CAN_BTR_TS2_7TQ,
+			   2,               /* BRP+1: Baud rate prescaler */
+			   false,           /* loopback mode */
+			   false);          /* silent mode */
+
+	  /* CAN filter 0 init. */
+	  can_filter_id_mask_32bit_init(CAN1,
+	                                0,     /* Filter ID */
+	                                0,     /* CAN ID */
+	                                0,     /* CAN ID mask */
+	                                0,     /* FIFO assignment (here: FIFO0) */
+	                                true); /* Enable the filter. */
+}
+
