@@ -27,6 +27,7 @@
 #include <libopencm3/usb/usbd.h>
 #include <libopencm3/usb/dfu.h>
 #include <libopencm3/stm32/can.h>
+#include <libopencm3/cm3/nvic.h>
 
 #define LED1_PORT		GPIOA
 #define LED1_PIN		GPIO10
@@ -72,13 +73,14 @@ static bool gpio_force_bootloader(void);
 static void led_advance(void);
 static void led_set(int id, int on);
 
-char *get_dev_unique_id(char *serial_no);
+static char *get_dev_unique_id(char *serial_no);
 static u8 usbdfu_getstatus(u32 *bwPollTimeout);
 static void usbdfu_getstatus_complete(usbd_device *device, struct usb_setup_data *req);
 static int usbdfu_control_request(usbd_device *device, struct usb_setup_data *req, u8 **buf,
 		u16 *len, void (**complete)(usbd_device *device, struct usb_setup_data *req));
 
-static void gw_can_init(void);
+static void gw_can_init(uint32_t baud);
+static bool can_bl_request(uint16_t node);
 
 static struct {
 	u8 buf[sizeof(usbd_control_buffer)];
@@ -86,6 +88,15 @@ static struct {
 	u32 addr;
 	u16 blocknum;
 } prog;
+
+typedef struct {
+	u32 gpioport;
+	u16 gpios;
+}gpio_config_t;
+
+gpio_config_t io_cfg[] = {
+			{LED1_PORT, LED1_PIN},
+			{LED2_PORT, LED2_PIN}};
 
 const struct usb_device_descriptor dev = {
 	.bLength = USB_DT_DEVICE_SIZE,
@@ -185,14 +196,25 @@ static void usbdfu_getstatus_complete(usbd_device *device, struct usb_setup_data
 
 	switch(usbdfu_state) {
 	case STATE_DFU_DNBUSY:
-
-		flash_unlock();
-		if(prog.blocknum == 0) {
-			if ((*(u32*)(prog.buf+1) < 0x8002000) ||
-			    (*(u32*)(prog.buf+1) >= 0x8040000)) {
+		if(prog.blocknum == 0)
+		{
+			u32 bl_address = *(u32*)(prog.buf+1);
+			if (bl_address < 0x8002000)
+			{
+				u16 node = (u16)(bl_address>>16);
+				// we will gateway to CAN nodes
+				if(!can_bl_request(node))
+				{
+					usbd_ep_stall_set(device, 0, 1);
+					return;
+				}
+			}else if (bl_address >= 0x8040000)
+			{
+				// out of range
 				usbd_ep_stall_set(device, 0, 1);
 				return;
 			}
+			flash_unlock();
 			switch(prog.buf[0]) {
 			case CMD_ERASE:
 				flash_erase_page(*(u32*)(prog.buf+1));
@@ -216,16 +238,6 @@ static void usbdfu_getstatus_complete(usbd_device *device, struct usb_setup_data
 		return;
 
 	case STATE_DFU_MANIFEST:
-		/* Mark DATA0 register that we have just downloaded the code */
-		if((FLASH_OBR & 0x3FC00) != 0x00) {
-		  flash_unlock();
-		  FLASH_CR = 0;
-		  flash_erase_option_bytes();
-		  flash_program_option_bytes(FLASH_OBP_RDP, 0x5AA5);
-		  flash_program_option_bytes(FLASH_OBP_WRP10, 0x03FC);
-		  flash_program_option_bytes(FLASH_OBP_DATA0, 0xFF00);
-		  flash_lock();
-		}
 		/* USB device must detach, we just reset... */
 		scb_reset_system();
 		return; /* Will never return */
@@ -293,6 +305,7 @@ static int usbdfu_control_request(usbd_device *device, struct usb_setup_data *re
 
 static void gpio_init(void)
 {
+	int io_ctr;
 	rcc_peripheral_enable_clock(&RCC_AHBENR, RCC_AHBENR_OTGFSEN);
 	/* Enable GPIOA, GPIOB, GPIOC, and AFIO clocks. */
 	rcc_peripheral_enable_clock(&RCC_APB2ENR, RCC_APB2ENR_IOPAEN |
@@ -301,18 +314,12 @@ static void gpio_init(void)
 						  RCC_APB2ENR_AFIOEN);
 	/* LED1 */
 	/* Set GPIO10 (in GPIO port A) to 'output push-pull'. */
-	gpio_set_mode(LED1_PORT, GPIO_MODE_OUTPUT_50_MHZ,
-			GPIO_CNF_OUTPUT_PUSHPULL, LED1_PIN);
-
-
-	/* LED2*/
-	/* Set GPIO15 (in GPIO port C) to 'output push-pull'. */
-	gpio_set_mode(LED2_PORT, GPIO_MODE_OUTPUT_50_MHZ,
-			GPIO_CNF_OUTPUT_PUSHPULL, LED2_PIN);
-
-	/* Preconfigure the LEDs. */
-	gpio_set(LED1_PORT, LED1_PIN);
-	gpio_set(LED2_PORT, LED2_PIN);
+	for(io_ctr = 0; io_ctr <(sizeof(io_cfg)/sizeof(io_cfg[0]));io_ctr++)
+	{
+		gpio_set_mode(io_cfg[io_ctr].gpioport, GPIO_MODE_OUTPUT_50_MHZ,
+				GPIO_CNF_OUTPUT_PUSHPULL, io_cfg[io_ctr].gpios);
+		gpio_set(io_cfg[0].gpioport,io_cfg[0].gpios);
+	}
 
 	/* USB detect pin */
 	gpio_clear(USBDETECT_PORT, USBDETECT_PIN);
@@ -320,22 +327,17 @@ static void gpio_init(void)
 				GPIO_CNF_INPUT_PULL_UPDOWN, USBDETECT_PIN);
 	gpio_clear(USBDETECT_PORT, USBDETECT_PIN);
 
-
 }
 
 static void gpio_uninit(void)
 {
+	int io_ctr;
 	/* Enable GPIOA, GPIOB, GPIOC, and AFIO clocks. */
-
-	/* LED1 */
-	gpio_set_mode(LED1_PORT, GPIO_MODE_INPUT,
-			GPIO_CNF_INPUT_FLOAT, LED1_PIN);
-
-
-	/* LED2*/
-	gpio_set_mode(LED2_PORT, GPIO_MODE_INPUT,
-			GPIO_CNF_INPUT_FLOAT, LED2_PIN);
-
+	for(io_ctr = 0; io_ctr <(sizeof(io_cfg)/sizeof(io_cfg[0]));io_ctr++)
+	{
+		gpio_set_mode(io_cfg[io_ctr].gpioport, GPIO_MODE_INPUT,
+				GPIO_CNF_INPUT_FLOAT, io_cfg[io_ctr].gpios);
+	}
 	/* USB detect */
 	gpio_set_mode(USBDETECT_PORT, GPIO_MODE_INPUT,
 				GPIO_CNF_INPUT_FLOAT, USBDETECT_PIN);
@@ -350,27 +352,9 @@ static void gpio_uninit(void)
 static void led_set(int id, int on)
 {
 	if (on) {
-		switch (id) {
-			case 0:
-				gpio_clear(LED1_PORT, LED1_PIN); /* LED1 On */
-				break;
-			case 1:
-				gpio_clear(LED2_PORT, LED2_PIN); /* LED2 On */
-				break;
-			default:
-				break;
-		}
+		gpio_clear(io_cfg[id].gpioport,io_cfg[id].gpios);
 	} else {
-		switch (id) {
-			case 0:
-				gpio_set(LED1_PORT, LED1_PIN); /* LED1 Off */
-				break;
-			case 1:
-				gpio_set(LED2_PORT, LED2_PIN); /* LED2 Off */
-				break;
-			default:
-				break;
-		}
+		gpio_set(io_cfg[id].gpioport,io_cfg[id].gpios);
 	}
 }
 
@@ -385,19 +369,13 @@ static void led_advance(void)
 
 static bool gpio_force_bootloader(void)
 {
-	bool retval = false;
-
-	if(gpio_get(USBDETECT_PORT, USBDETECT_PIN)) {
-		/* If vbus pin high, disable the pin bank and return */
-		retval = true;
-	}
-	return retval;
+	return gpio_get(USBDETECT_PORT, USBDETECT_PIN);
 }
 
 int main(void)
 {
 
-
+	uint8_t txdata[8];
 	gpio_init();
 
 	/* Check if the application is valid. */
@@ -407,22 +385,21 @@ int main(void)
 			gpio_uninit();
 			/* Set vector table base address. */
 			SCB_VTOR = APP_ADDRESS & 0xFFFF;
+
 			/* Initialise master stack pointer. */
-			asm volatile("msr msp, %0"::"g"
-					     (*(volatile u32 *)APP_ADDRESS));
+//			asm volatile("msr msp, %0"::"g"
+//					     (*(volatile u32 *)APP_ADDRESS));
+			// TODO possibly it is not needed
+
 			/* Jump to application. */
 			(*(void (**)())(APP_ADDRESS + 4))();
 	    }
 	}
-#if LUFTBOOT_USE_48MHZ_INTERNAL_OSC
-#pragma message "Luftboot using 8MHz internal RC oscillator to PLL it to 48MHz."
-	rcc_clock_setup_in_hsi_out_48mhz();
-#else
-#pragma message "Luftboot using 8MHz external clock to PLL it to 72MHz."
-	rcc_clock_setup_in_hse_8mhz_out_72mhz();
-#endif
 
-	gw_can_init();
+	rcc_clock_setup_in_hse_8mhz_out_72mhz();
+
+	gw_can_init(100);
+	can_transmit(CAN2,0x67d,false,false,8,txdata);
 
 	systick_set_clocksource(STK_CTRL_CLKSOURCE_AHB_DIV8);
 	systick_set_reload(900000);
@@ -439,11 +416,23 @@ int main(void)
 				USB_REQ_TYPE_TYPE | USB_REQ_TYPE_RECIPIENT,
 				usbdfu_control_request);
 
+	txdata[0] = 0x40;
+	txdata[0] = 0;
+	txdata[0] = 0x10;
+	txdata[0] = 0;
+	txdata[0] = 0;
+	txdata[0] = 0;
+	txdata[0] = 0;
+	txdata[0] = 0;
+
+
 	while (1)
+	{
 		usbd_poll(device);
+	}
 }
 
-char *get_dev_unique_id(char *s)
+static char *get_dev_unique_id(char *s)
 {
 	volatile uint8_t *unique_id = (volatile uint8_t *)0x1FFFF7E8;
 	int i;
@@ -470,10 +459,46 @@ void sys_tick_handler()
 	led_advance();
 }
 
-static void gw_can_init(void)
+static void gw_can_init(uint32_t baud)
 {
-	can_reset(CAN1);
-	can_init(CAN1,
+	/* Enable peripheral clocks. */
+	rcc_peripheral_enable_clock(&RCC_APB2ENR, RCC_APB2ENR_AFIOEN);
+	rcc_peripheral_enable_clock(&RCC_APB2ENR, RCC_APB2ENR_IOPBEN);
+	//TODO: these two above are possibly already enabled
+	rcc_peripheral_enable_clock(&RCC_APB1ENR, RCC_APB1ENR_CAN2EN);
+	AFIO_MAPR &= ~AFIO_MAPR_CAN2_REMAP;	//PB12 PB13
+
+	/* Configure CAN pin: RX (input pull-up). */
+	gpio_set_mode(GPIO_BANK_CAN2_RX, GPIO_MODE_INPUT,
+		      GPIO_CNF_INPUT_PULL_UPDOWN, GPIO_CAN2_RX);
+	gpio_set(GPIO_BANK_CAN2_RX, GPIO_CAN2_RX);
+
+	/* Configure CAN pin: TX. */
+	gpio_set_mode(GPIO_BANK_CAN2_TX, GPIO_MODE_OUTPUT_50_MHZ,
+		      GPIO_CNF_OUTPUT_ALTFN_PUSHPULL, GPIO_CAN2_TX);
+
+	/* NVIC setup. */
+	nvic_enable_irq(NVIC_CAN2_RX0_IRQ);
+	nvic_set_priority(NVIC_CAN2_RX0_IRQ, 1);
+
+	can_reset(CAN2);
+
+	u32 brp;
+
+	switch (baud) {
+	case 100:
+		brp = 20;
+		break;
+	case 1000:
+		brp = 2;
+		break;
+	default:
+		brp = 2;
+		break;
+	}
+
+	/* 36 / 20 / (10+7+1) = 100 kHz */
+	can_init(CAN2,
 			   false,           /* TTCM: Time triggered comm mode? */
 			   true,            /* ABOM: Automatic bus-off management? */
 			   false,           /* AWUM: Automatic wakeup mode? */
@@ -483,16 +508,36 @@ static void gw_can_init(void)
 			   CAN_BTR_SJW_1TQ,
 			   CAN_BTR_TS1_10TQ,
 			   CAN_BTR_TS2_7TQ,
-			   2,               /* BRP+1: Baud rate prescaler */
+			   brp,               /* BRP+1: Baud rate prescaler */
 			   false,           /* loopback mode */
 			   false);          /* silent mode */
 
 	  /* CAN filter 0 init. */
-	  can_filter_id_mask_32bit_init(CAN1,
+	can_filter_id_mask_32bit_init(CAN2,
 	                                0,     /* Filter ID */
 	                                0,     /* CAN ID */
 	                                0,     /* CAN ID mask */
 	                                0,     /* FIFO assignment (here: FIFO0) */
 	                                true); /* Enable the filter. */
+	/* Enable CAN RX interrupt. */
+    //can_enable_irq(CAN2, CAN_IER_FMPIE0);
 }
 
+static bool can_bl_request(uint16_t node)
+{
+	/* this is empty now */
+	/* shall set up CAN to 1Mbps then send out the PROG request to the CAN id */
+	/* after receiving the response it shall switch to 100kbps for programming */
+	return true;
+}
+
+/*
+void can2_rx0_isr(void)
+{
+	u32 id, fmi;
+	bool ext, rtr;
+	u8 length, data[8];
+
+	can_receive(CAN2, 0, false, &id, &ext, &rtr, &fmi, &length, data);
+	can_fifo_release(CAN2, 0);
+}*/
