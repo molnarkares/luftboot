@@ -79,6 +79,13 @@ static void usbdfu_getstatus_complete(usbd_device *device, struct usb_setup_data
 static int usbdfu_control_request(usbd_device *device, struct usb_setup_data *req, u8 **buf,
 		u16 *len, void (**complete)(usbd_device *device, struct usb_setup_data *req));
 
+
+#define CAN_REQUEST_ID	0x67D
+#define CAN_RESPONSE_ID	0x5FD
+#define CAN_GW_TIMEOUT 	(50*9000)	// 5 * 10ms
+#define SYSTICK_TIMEOUT_100MS	900000
+
+
 static void gw_can_init(uint32_t baud);
 static bool can_bl_request(uint16_t node);
 
@@ -97,6 +104,15 @@ typedef struct {
 gpio_config_t io_cfg[] = {
 			{LED1_PORT, LED1_PIN},
 			{LED2_PORT, LED2_PIN}};
+
+typedef struct {
+	u32 id;
+	u8 data[8];
+	u8 length;
+	volatile bool received;
+} can_rx_t;
+
+can_rx_t can_received_frame;
 
 const struct usb_device_descriptor dev = {
 	.bLength = USB_DT_DEVICE_SIZE,
@@ -318,7 +334,7 @@ static void gpio_init(void)
 	{
 		gpio_set_mode(io_cfg[io_ctr].gpioport, GPIO_MODE_OUTPUT_50_MHZ,
 				GPIO_CNF_OUTPUT_PUSHPULL, io_cfg[io_ctr].gpios);
-		gpio_set(io_cfg[0].gpioport,io_cfg[0].gpios);
+		gpio_set(io_cfg[io_ctr].gpioport,io_cfg[io_ctr].gpios);
 	}
 
 	/* USB detect pin */
@@ -361,10 +377,8 @@ static void led_set(int id, int on)
 static void led_advance(void)
 {
 	static int state = 0;
-	led_set((state >>1)&0x01,(state & 0x01));
+	led_set(0,(state & 0x8));
 	state++;
-	if(state == 4) state = 0;
-
 }
 
 static bool gpio_force_bootloader(void)
@@ -375,7 +389,6 @@ static bool gpio_force_bootloader(void)
 int main(void)
 {
 
-	uint8_t txdata[8];
 	gpio_init();
 
 	/* Check if the application is valid. */
@@ -398,10 +411,10 @@ int main(void)
 
 	rcc_clock_setup_in_hse_8mhz_out_72mhz();
 	gw_can_init(100);
-	can_transmit(CAN2,0x67d,false,false,8,txdata);
+	//can_transmit(CAN2,0x67d,false,false,8,txdata);
 
 	systick_set_clocksource(STK_CTRL_CLKSOURCE_AHB_DIV8);
-	systick_set_reload(900000);
+	systick_set_reload(SYSTICK_TIMEOUT_100MS);
 	systick_interrupt_enable();
 	systick_counter_enable();
 
@@ -414,17 +427,10 @@ int main(void)
 				USB_REQ_TYPE_CLASS | USB_REQ_TYPE_INTERFACE,
 				USB_REQ_TYPE_TYPE | USB_REQ_TYPE_RECIPIENT,
 				usbdfu_control_request);
-
-	txdata[0] = 0x40;
-	txdata[0] = 0;
-	txdata[0] = 0x10;
-	txdata[0] = 0;
-	txdata[0] = 0;
-	txdata[0] = 0;
-	txdata[0] = 0;
-	txdata[0] = 0;
-
-
+	if (can_bl_request(0))
+	{
+		led_set(1,1);
+	}
 	while (1)
 	{
 		usbd_poll(device);
@@ -509,33 +515,95 @@ static void gw_can_init(uint32_t baud)
 			   false);          /* silent mode */
 
 	  /* CAN filter 0 init. */
-	can_filter_id_mask_32bit_init(CAN1,		/* it is always for CAN1 only */
-	                                14,     /* Filter ID , first for CAN2 */
-	                                0,     /* CAN ID */
-	                                0,     /* CAN ID mask */
-	                                0,     /* FIFO assignment (here: FIFO0) */
-	                                true); /* Enable the filter. */
+//	can_filter_id_mask_32bit_init(CAN1,		/* it is always for CAN1 only */
+//	                                14,     /* Filter ID , first for CAN2 */
+//	                                0,     /* CAN ID */
+//	                                0,     /* CAN ID mask */
+//	                                0,     /* FIFO assignment (here: FIFO0) */
+//	                                true); /* Enable the filter. */
+	can_filter_id_mask_32bit_init(CAN1,14,CAN_RESPONSE_ID,0,0,true);
 	/* Enable CAN RX interrupt. */
 	nvic_enable_irq(NVIC_CAN2_RX0_IRQ);
 	nvic_set_priority(NVIC_CAN2_RX0_IRQ, 1);
-    //can_enable_irq(CAN2, CAN_IER_FMPIE0);
+    can_enable_irq(CAN2, CAN_IER_FMPIE0);
 }
+
+/* BL request is a two stage operation:
+ *
+ * 1. Gateway is requesting BL mode by transmitting to the
+ * particular node PROG CAN ID on 1Mbps
+ * 2. After waiting for the successful transmission the GW changes to 100kbps
+ * 3. Then the gateway is changing transmits Device Type Request
+ * 4. Expected response is ASCII "LPC1"
+ *
+ */
 
 static bool can_bl_request(uint16_t node)
 {
-	/* this is empty now */
-	/* shall set up CAN to 1Mbps then send out the PROG request to the CAN id */
-	/* after receiving the response it shall switch to 100kbps for programming */
-	return true;
+	u32 id, fmi;
+	bool ext, rtr,received;
+	u8 length, data[8];
+	u8 candata[8];
+	u32 timeout_val;
+
+	/*
+	 * Request from flash loader:
+	 * ID = 0x67D Len = 8 Data = 0x40 0x00 0x10 0x00 0x00 0x00 0x00 0x00
+	 *
+	 * Expected response:
+	 * ID = 0x5FD Len = 8 Data = 0x43 0x00 0x10 0x00 0x4C 0x50 0x43 0x31
+	 * */
+
+	candata[0] = 0x40;
+	candata[0] = 0;
+	candata[0] = 0x10;
+	candata[0] = 0;
+	candata[0] = 0;
+	candata[0] = 0;
+	candata[0] = 0;
+	candata[0] = 0;
+
+	can_received_frame.received = false;
+	timeout_val = systick_get_value();
+	can_transmit(CAN2,CAN_REQUEST_ID,false,false,8,candata);
+	do
+	{
+		u32 now =systick_get_value();
+		if( now > timeout_val)
+		{
+			timeout_val += SYSTICK_TIMEOUT_100MS;
+		}
+		if ((timeout_val - now) > CAN_GW_TIMEOUT)
+		{
+			return false;
+		}
+	}while(can_received_frame.received == false);
+
+	candata[0] = 0x43;
+	candata[0] = 0x00;
+	candata[0] = 0x10;
+	candata[0] = 0x00;
+	candata[0] = 'l';
+	candata[0] = 'p';
+	candata[0] = 'c';
+	candata[0] = '1';
+	if((can_received_frame.id == CAN_RESPONSE_ID) &&
+			(can_received_frame.length == 8))
+	{
+		if(!memcmp(can_received_frame.data,candata,8))
+		{
+			return true;
+		}
+	}
+	return false;
 }
 
-/*
+
 void can2_rx0_isr(void)
 {
-	u32 id, fmi;
-	bool ext, rtr;
-	u8 length, data[8];
-
-	can_receive(CAN2, 0, false, &id, &ext, &rtr, &fmi, &length, data);
-	can_fifo_release(CAN2, 0);
-}*/
+	bool ext,rtr;
+	u32 fmi;
+	can_receive(CAN2, 0, true, &can_received_frame.id, &ext, &rtr, &fmi,
+				&can_received_frame.length, can_received_frame.data);
+	can_received_frame.received = true;
+}
