@@ -397,7 +397,6 @@ int main(void)
 	}
 
 	rcc_clock_setup_in_hse_8mhz_out_72mhz();
-
 	gw_can_init(100);
 	can_transmit(CAN2,0x67d,false,false,8,txdata);
 
@@ -478,9 +477,6 @@ static void gw_can_init(uint32_t baud)
 		      GPIO_CNF_OUTPUT_ALTFN_PUSHPULL, GPIO_CAN2_TX);
 
 	/* NVIC setup. */
-	nvic_enable_irq(NVIC_CAN2_RX0_IRQ);
-	nvic_set_priority(NVIC_CAN2_RX0_IRQ, 1);
-
 	can_reset(CAN2);
 
 	u32 brp;
@@ -513,13 +509,15 @@ static void gw_can_init(uint32_t baud)
 			   false);          /* silent mode */
 
 	  /* CAN filter 0 init. */
-	can_filter_id_mask_32bit_init(CAN2,
-	                                0,     /* Filter ID */
+	can_filter_id_mask_32bit_init(CAN1,		/* it is always for CAN1 only */
+	                                14,     /* Filter ID , first for CAN2 */
 	                                0,     /* CAN ID */
 	                                0,     /* CAN ID mask */
 	                                0,     /* FIFO assignment (here: FIFO0) */
 	                                true); /* Enable the filter. */
 	/* Enable CAN RX interrupt. */
+	nvic_enable_irq(NVIC_CAN2_RX0_IRQ);
+	nvic_set_priority(NVIC_CAN2_RX0_IRQ, 1);
     //can_enable_irq(CAN2, CAN_IER_FMPIE0);
 }
 
