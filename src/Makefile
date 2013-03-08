@@ -13,7 +13,7 @@ endif
 CC = $(CROSS_COMPILE)gcc
 OBJCOPY = $(CROSS_COMPILE)objcopy
 
-LIBOPENCM3 ?= $(TOOLCHAIN_DIR)/..
+LIBOPENCM3 ?= ../../libopencm3
 OOCD_INTERFACE  ?= jlink
 OOCD_TARGET     ?= stm32f1x
 OOCD_BOARD      ?= papilot
