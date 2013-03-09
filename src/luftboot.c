@@ -89,6 +89,7 @@ static int usbdfu_control_request(usbd_device *device, struct usb_setup_data *re
 static void gw_can_init(uint32_t baud);
 static bool can_bl_request(uint16_t node);
 
+
 static struct {
 	u8 buf[sizeof(usbd_control_buffer)];
 	u16 len;
@@ -110,9 +111,11 @@ typedef struct {
 	u8 data[8];
 	u8 length;
 	volatile bool received;
-} can_rx_t;
+} can_msg_t;
 
-can_rx_t can_received_frame;
+can_msg_t * can_received_frame = NULL;
+static bool can_sendrec(can_msg_t *tx_msg, can_msg_t *rx_msg, u32 timeout);
+
 
 const struct usb_device_descriptor dev = {
 	.bLength = USB_DT_DEVICE_SIZE,
@@ -516,17 +519,13 @@ static void gw_can_init(uint32_t baud)
 			   false);          /* silent mode */
 
 	  /* CAN filter 0 init. */
-//	can_filter_id_mask_32bit_init(CAN1,		/* it is always for CAN1 only */
-//	                                14,     /* Filter ID , first for CAN2 */
-//	                                0,     /* CAN ID */
-//	                                0,     /* CAN ID mask */
-//	                                0,     /* FIFO assignment (here: FIFO0) */
-//	                                true); /* Enable the filter. */
-	can_filter_id_mask_32bit_init(CAN1,14,CAN_RESPONSE_ID,0,0,true);
+	can_filter_id_mask_32bit_init(CAN1,14,
+			CAN_RESPONSE_ID<<CAN_RIxR_STID_SHIFT,
+			CAN_RIxR_STID_MASK<<CAN_RIxR_STID_SHIFT,
+			0,true);
 	/* Enable CAN RX interrupt. */
-	/*nvic_enable_irq(NVIC_CAN2_RX0_IRQ);
+	nvic_enable_irq(NVIC_CAN2_RX0_IRQ);
 	nvic_set_priority(NVIC_CAN2_RX0_IRQ, 1);
-    can_enable_irq(CAN2, CAN_IER_FMPIE0);*/
 }
 
 /* BL request is a two stage operation:
@@ -541,13 +540,9 @@ static void gw_can_init(uint32_t baud)
 
 static bool can_bl_request(uint16_t node)
 {
-	u32 id, fmi;
-	bool ext, rtr,received;
-	u8 length, data[8];
-	u8 candata[8];
-	u32 timeout_val;
+	const u8 response_init[8] = {0x43,0x00,0x10,0x00,'L','P','C','1'};
+	can_msg_t tx_frame,rx_frame;
 
-	// temp
 	/*
 	 * Request from flash loader:
 	 * ID = 0x67D Len = 8 Data = 0x40 0x00 0x10 0x00 0x00 0x00 0x00 0x00
@@ -555,20 +550,94 @@ static bool can_bl_request(uint16_t node)
 	 * Expected response:
 	 * ID = 0x5FD Len = 8 Data = 0x43 0x00 0x10 0x00 0x4C 0x50 0x43 0x31
 	 * */
+	tx_frame.id = CAN_REQUEST_ID;
+	tx_frame.length = 8;
+	tx_frame.data[0] = 0x40;
+	tx_frame.data[1] = 0;
+	tx_frame.data[2] = 0x10;
+	tx_frame.data[3] = 0;
+	tx_frame.data[4] = 0;
+	tx_frame.data[5] = 0;
+	tx_frame.data[6] = 0;
+	tx_frame.data[7] = 0;
 
-	candata[0] = 0x40;
-	candata[1] = 0;
-	candata[2] = 0x10;
-	candata[3] = 0;
-	candata[4] = 0;
-	candata[5] = 0;
-	candata[6] = 0;
-	candata[7] = 0;
+	if(can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT))
+	{
+		if((rx_frame.id == CAN_RESPONSE_ID) &&
+				(rx_frame.length == 8))
+		{
+			if(memcmp(rx_frame.data,response_init,8))
+			{
+				return false;
+			}
+		}
+	} else
+	{
+		return false;
+	}
+	/* unlock request */
+	tx_frame.data[0] = 0x2b;
+	tx_frame.data[1] = 0;
+	tx_frame.data[2] = 0x50;
+	tx_frame.data[3] = 0;
 
-	can_received_frame.received = false;
+	tx_frame.data[4] = 0x5a;
+	tx_frame.data[5] = 0x5a;
+	tx_frame.data[6] = 0;
+	tx_frame.data[7] = 0;
+
+	if(can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT))
+	{
+		if((rx_frame.length == 8) &&
+			(rx_frame.id == CAN_RESPONSE_ID) &&
+			(rx_frame.data[0] == 0x60) &&
+			(rx_frame.data[2] == 0x50))
+		{
+			/* unlock request ACKed */
+			return true;
+		}
+
+	}
+
+	return false;
+}
+
+/* interrupt handler for CAN frame reception.
+ * TBD: not sure if it is needed at all
+ */
+void can2_rx0_isr(void)
+{
+	/* check if there is any buffer configured */
+	if(can_received_frame != NULL) {
+		/* avoid overrun */
+		if(!can_received_frame->received)
+		{
+			bool ext,rtr;
+			u32 fmi;
+			can_receive(CAN2, 0, false, &can_received_frame->id, &ext, &rtr, &fmi,
+						&can_received_frame->length, can_received_frame->data);
+			can_received_frame->received = true;
+		}
+	}
+
+	can_fifo_release(CAN2,0);
+	nvic_clear_pending_irq(NVIC_CAN2_RX0_IRQ);
+
+}
+
+
+static bool can_sendrec(can_msg_t *tx_msg, can_msg_t *rx_msg, u32 timeout)
+{
+	u32 timeout_val;
+
+	can_disable_irq(CAN2,CAN_IER_FMPIE0);
+	can_received_frame = rx_msg;
+	can_enable_irq(CAN2, CAN_IER_FMPIE0);
+	can_received_frame->received = false;
 	timeout_val = systick_get_value();
-	can_transmit(CAN2,CAN_REQUEST_ID,false,false,8,candata);
-	led_set(1,1);
+
+	/* transmit the request and wait for 50 ms to see if the node responds */
+	can_transmit(CAN2,tx_msg->id,false,false,tx_msg->length,tx_msg->data);
 	do
 	{
 		u32 now =systick_get_value();
@@ -576,47 +645,16 @@ static bool can_bl_request(uint16_t node)
 		{
 			timeout_val += SYSTICK_TIMEOUT_100MS;
 		}
-		if ((timeout_val - now) > CAN_GW_TIMEOUT)
+		if ((timeout_val - now) > timeout)
 		{
-			led_set(1,0);
 			return false;
 		}
-		can_receive(CAN2, 0, true, &can_received_frame.id, &ext, &rtr, &fmi,
-							&can_received_frame.length, can_received_frame.data);
-	}while (can_received_frame.length != 8);
-	//}while(can_received_frame.received == false);
-	led_set(1,0);
-	can_received_frame.received = false;
+	}while(can_received_frame->received == false);
+	can_received_frame->received = false;
 
-	candata[0] = 0x43;
-	candata[1] = 0x00;
-	candata[2] = 0x10;
-	candata[3] = 0x00;
-	candata[4] = 'L';
-	candata[5] = 'P';
-	candata[6] = 'C';
-	candata[7] = '1';
-	if((can_received_frame.id == CAN_RESPONSE_ID) &&
-			(can_received_frame.length == 8))
-	{
-		if(!memcmp(can_received_frame.data,candata,8))
-		{
-			return true;
-		}
-	}
-	return false;
-}
+	can_disable_irq(CAN2,CAN_IER_FMPIE0);
+	can_received_frame = NULL;
+	can_enable_irq(CAN2, CAN_IER_FMPIE0);
 
-
-void can2_rx0_isr(void)
-{
-	bool ext,rtr;
-	u32 fmi;
-	/* avoid overrun */
-	if(!can_received_frame.received)
-	{
-		can_receive(CAN2, 0, true, &can_received_frame.id, &ext, &rtr, &fmi,
-					&can_received_frame.length, can_received_frame.data);
-		can_received_frame.received = true;
-	}
+	return true;
 }
