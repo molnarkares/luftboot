@@ -44,7 +44,7 @@ endif
 
 all: luftboot.bin luftboot.hex
 
-luftboot.elf: luftboot.o
+luftboot.elf: luftboot.o $(LIBOPENCM3)/lib/libopencm3_stm32f1.a
 	$(CC) $^ -o $@ $(LDFLAGS_BOOT)
 
 luftboot.bin: luftboot.elf
