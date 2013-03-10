@@ -46,7 +46,7 @@
 #define DEV_SERIAL      "NSERIAL"
 #endif
 
-#define APP_ADDRESS		0x08002000
+#define APP_ADDRESS		0x08004000
 #define APP_END_ADDRESS	0x08040000
 #define SECTOR_SIZE	2048
 
@@ -245,7 +245,6 @@ static void usbdfu_getstatus_complete(usbd_device *device, struct usb_setup_data
 				usbd_ep_stall_set(device, 0, 1);
 				return;
 			}
-			flash_unlock();
 			switch(prog.buf[0]) {
 				u32 bl_address = *(u32*)(prog.buf+1);
 			case CMD_ERASE:
@@ -257,6 +256,7 @@ static void usbdfu_getstatus_complete(usbd_device *device, struct usb_setup_data
 					}
 				}else
 				{
+					flash_unlock();
 					flash_erase_page(bl_address);
 				}
 			case CMD_SETADDR:
@@ -459,9 +459,12 @@ int main(void)
 	{
 		/* indicating that CAN connection is alive */
 		led_set(1,1);
-		//if(can_erase_sector(0))
+		if(gw_can_erase_sector(0))
 		{
-			led_set(1,0);
+			if(gw_can_flash_program(0,prog.buf,256))
+			{
+				led_set(1,0);
+			}
 		}
 	}
 	while (1)
@@ -594,7 +597,7 @@ static bool gw_can_bl_request(uint16_t node)
 	 * ID = 0x5FD Len = 8 Data = 0x43 0x00 0x10 0x00 0x4C 0x50 0x43 0x31
 	 *
 	 */
-	rx_frame.id = CAN_RESPONSE_ID;
+	//rx_frame.id = CAN_RESPONSE_ID;
 	rx_frame.length = 8;
 	rx_frame.data[0] = 0x43;
 	rx_frame.data[1] = 0x00;
@@ -606,7 +609,7 @@ static bool gw_can_bl_request(uint16_t node)
 	rx_frame.data[7] = '1';
 
 
-	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,true,true,0xff))
+	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0xff))
 	{
 		return false;
 	}
@@ -626,7 +629,7 @@ static bool gw_can_bl_request(uint16_t node)
 	rx_frame.data[2] = 0x50;
 
 
-	if(gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,true,true,0b00000101))
+	if(gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000101))
 	{
 			/* unlock request ACKed */
 			return true;
@@ -736,7 +739,7 @@ static bool gw_can_erase_sector(u32 address)
 	sector = (u8)(address/NODE_SECTOR_SIZE);
 	tx_frame.id = CAN_REQUEST_ID;
 	tx_frame.length = 8;
-	rx_frame.id = CAN_RESPONSE_ID;
+	//rx_frame.id = CAN_RESPONSE_ID;
 	rx_frame.length = 8;
 
 	/* sector erase is a two step process:
@@ -759,7 +762,7 @@ static bool gw_can_erase_sector(u32 address)
 	rx_frame.data[1] = 0x20;
 	rx_frame.data[2] = 0x50;
 
-	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,true,true,0b00000111))
+	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
 	{
 			/* write preparation request not ACKed */
 			return false;
@@ -783,7 +786,7 @@ static bool gw_can_erase_sector(u32 address)
 //	rx_frame.data[0] = 0x60;
 	rx_frame.data[1] = 0x30;
 //	rx_frame.data[2] = 0x50;
-	if(!gw_can_sendrec(&tx_frame,&rx_frame,NODE_ERASE_TIMEOUT,true,true,0b00000111))
+	if(!gw_can_sendrec(&tx_frame,&rx_frame,NODE_ERASE_TIMEOUT,false,true,0b00000111))
 	{
 			/* erase request not ACKed */
 			return false;
@@ -796,11 +799,8 @@ static bool gw_can_flash_program(u32 address, u8* data, u16 len)
 	can_msg_t tx_frame,rx_frame;
 	u8 sector = (u8)(address/NODE_SECTOR_SIZE);
 	tx_frame.id = CAN_REQUEST_ID;
-
-
-
 	tx_frame.length = 8;
-	rx_frame.id = CAN_RESPONSE_ID;
+	//rx_frame.id = CAN_RESPONSE_ID;
 	rx_frame.length = 8;
 
 	/* flash prepare write command */
@@ -819,13 +819,81 @@ static bool gw_can_flash_program(u32 address, u8* data, u16 len)
 	rx_frame.data[1] = 0x20;
 	rx_frame.data[2] = 0x50;
 
-	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,true,true,0b00000111))
+	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
 	{
 			/* write preparation request not ACKed */
 			return false;
 	}
 
+	/* RAM write address command */
+	tx_frame.data[0] = 0x23;
+	tx_frame.data[1] = 0x15;
+	tx_frame.data[2] = 0x50;
+	tx_frame.data[3] = 0x00;
+
+	tx_frame.data[4] = (u8)NODE_RAM_START;
+	tx_frame.data[5] = (u8)(NODE_RAM_START>>8);
+	tx_frame.data[6] = (u8)(NODE_RAM_START>>16);
+	tx_frame.data[7] = (u8)(NODE_RAM_START>>24);
+
+	/* expected response */
+	rx_frame.data[0] = 0x60;
+	rx_frame.data[1] = 0x15;
+	rx_frame.data[2] = 0x50;
+
+	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
+	{
+			/* RAM write address request not ACKed */
+			return false;
+	}
 
 
+//	 Segmented download command
+	tx_frame.data[0] = 0x21;
+	tx_frame.data[1] = 0x50;
+	tx_frame.data[2] = 0x1f;
+	tx_frame.data[3] = 0x01;
+
+	tx_frame.data[4] = (u8)len;
+	tx_frame.data[5] = (u8)(len>>8);
+	tx_frame.data[6] = 0;
+	tx_frame.data[7] = 0;
+
+	 //expected response
+	rx_frame.data[0] = 0x60;
+	rx_frame.data[1] = 0x50;
+	rx_frame.data[2] = 0x1f;
+
+	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
+	{
+	//		 RAM write address request not ACKed
+			return false;
+	}
+	while(len > 7)
+	{
+		static int toggle = 0;
+	//	 Segmented download command
+		tx_frame.data[0] = 0x21;
+		tx_frame.data[1] = 0x50;
+		tx_frame.data[2] = 0x1f;
+		tx_frame.data[3] = 0x01;
+
+		tx_frame.data[4] = (u8)len;
+		tx_frame.data[5] = (u8)(len>>8);
+		tx_frame.data[6] = 0;
+		tx_frame.data[7] = 0;
+
+		 //expected response
+		rx_frame.data[0] = 0x60;
+		rx_frame.data[1] = 0x50;
+		rx_frame.data[2] = 0x1f;
+
+		if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
+		{
+		//		 RAM write address request not ACKed
+				return false;
+		}
+		len -= 7;
+	}
 
 }
