@@ -46,7 +46,8 @@
 #define DEV_SERIAL      "NSERIAL"
 #endif
 
-#define APP_ADDRESS	0x08002000
+#define APP_ADDRESS		0x08002000
+#define APP_END_ADDRESS	0x08040000
 #define SECTOR_SIZE	2048
 
 /* Commands sent with wBlockNum == 0 as per ST implementation. */
@@ -82,13 +83,18 @@ static int usbdfu_control_request(usbd_device *device, struct usb_setup_data *re
 
 #define CAN_REQUEST_ID	0x67D
 #define CAN_RESPONSE_ID	0x5FD
-#define CAN_GW_TIMEOUT 	(50*9000)	// 5 * 10ms
+#define CAN_GW_TIMEOUT 	(50*9000)	// 50 ms
 #define SYSTICK_TIMEOUT_100MS	900000
 
 
-static void gw_can_init(uint32_t baud);
-static bool can_bl_request(uint16_t node);
 
+
+#define NODE_SECTOR_SIZE	(4*1024)
+#define NODE_SECTOR_NUM		8
+#define NODE_FLASH_START	(0x00000000)
+#define NODE_FLASH_END		(NODE_FLASH_START + (NODE_SECTOR_NUM*NODE_SECTOR_SIZE))
+#define NODE_RAM_START		(0x10001000)
+#define NODE_ERASE_TIMEOUT  (120*9000)	// 120 ms
 
 static struct {
 	u8 buf[sizeof(usbd_control_buffer)];
@@ -114,7 +120,13 @@ typedef struct {
 } can_msg_t;
 
 can_msg_t * can_received_frame = NULL;
-static bool can_sendrec(can_msg_t *tx_msg, can_msg_t *rx_msg, u32 timeout);
+
+static bool gw_can_sendrec(can_msg_t *tx_msg, can_msg_t *rx_msg_ref, u32 timeout,
+		bool check_id, bool check_len, u8 check_data_map);
+static bool gw_can_erase_sector(u32 address);
+static void gw_can_init(uint32_t baud);
+static bool gw_can_bl_request(uint16_t node);
+static bool gw_can_flash_program(u32 address, u8* data, u16 len);
 
 
 const struct usb_device_descriptor dev = {
@@ -218,16 +230,16 @@ static void usbdfu_getstatus_complete(usbd_device *device, struct usb_setup_data
 		if(prog.blocknum == 0)
 		{
 			u32 bl_address = *(u32*)(prog.buf+1);
-			if (bl_address < 0x8002000)
+			if (bl_address < APP_ADDRESS)
 			{
 				u16 node = (u16)(bl_address>>16);
 				// we will gateway to CAN nodes
-				if(!can_bl_request(node))
+				if(!gw_can_bl_request(node))
 				{
 					usbd_ep_stall_set(device, 0, 1);
 					return;
 				}
-			}else if (bl_address >= 0x8040000)
+			}else if (bl_address >= APP_END_ADDRESS)
 			{
 				// out of range
 				usbd_ep_stall_set(device, 0, 1);
@@ -235,18 +247,37 @@ static void usbdfu_getstatus_complete(usbd_device *device, struct usb_setup_data
 			}
 			flash_unlock();
 			switch(prog.buf[0]) {
+				u32 bl_address = *(u32*)(prog.buf+1);
 			case CMD_ERASE:
-				flash_erase_page(*(u32*)(prog.buf+1));
+				if (bl_address < APP_ADDRESS)
+				{
+					if(!gw_can_erase_sector(bl_address))
+					{
+						usbd_ep_stall_set(device, 0, 1);
+					}
+				}else
+				{
+					flash_erase_page(bl_address);
+				}
 			case CMD_SETADDR:
-				prog.addr = *(u32*)(prog.buf+1);
+				prog.addr = bl_address;
 			}
 		} else {
 			u32 baseaddr = prog.addr +
 				((prog.blocknum - 2) *
 					dfu_function.wTransferSize);
-			for(i = 0; i < prog.len; i += 2)
-				flash_program_half_word(baseaddr + i,
-						*(u16*)(prog.buf+i));
+			if(baseaddr > APP_ADDRESS) // program stm32
+			{
+				for(i = 0; i < prog.len; i += 2)
+					flash_program_half_word(baseaddr + i,
+										*(u16*)(prog.buf+i));
+			}else // gateway
+			{
+				if(!gw_can_flash_program(baseaddr,prog.buf,prog.len))
+				{
+					usbd_ep_stall_set(device, 0, 1);
+				}
+			}
 		}
 		flash_lock();
 
@@ -402,11 +433,6 @@ int main(void)
 			/* Set vector table base address. */
 			SCB_VTOR = APP_ADDRESS & 0xFFFF;
 
-			/* Initialise master stack pointer. */
-//			asm volatile("msr msp, %0"::"g"
-//					     (*(volatile u32 *)APP_ADDRESS));
-			// TODO possibly it is not needed
-
 			/* Jump to application. */
 			(*(void (**)())(APP_ADDRESS + 4))();
 	    }
@@ -414,7 +440,6 @@ int main(void)
 
 	rcc_clock_setup_in_hse_8mhz_out_72mhz();
 	gw_can_init(100);
-	//can_transmit(CAN2,0x67d,false,false,8,txdata);
 
 	systick_set_clocksource(STK_CTRL_CLKSOURCE_AHB_DIV8);
 	systick_set_reload(SYSTICK_TIMEOUT_100MS);
@@ -430,9 +455,14 @@ int main(void)
 				USB_REQ_TYPE_CLASS | USB_REQ_TYPE_INTERFACE,
 				USB_REQ_TYPE_TYPE | USB_REQ_TYPE_RECIPIENT,
 				usbdfu_control_request);
-	if (can_bl_request(0))
+	if (gw_can_bl_request(0))
 	{
+		/* indicating that CAN connection is alive */
 		led_set(1,1);
+		//if(can_erase_sector(0))
+		{
+			led_set(1,0);
+		}
 	}
 	while (1)
 	{
@@ -535,10 +565,11 @@ static void gw_can_init(uint32_t baud)
  * 2. After waiting for the successful transmission the GW changes to 100kbps
  * 3. Then the gateway is changing transmits Device Type Request
  * 4. Expected response is ASCII "LPC1"
+ * 5. After that it performs Flash command unlock on the node
  *
  */
 
-static bool can_bl_request(uint16_t node)
+static bool gw_can_bl_request(uint16_t node)
 {
 	const u8 response_init[8] = {0x43,0x00,0x10,0x00,'L','P','C','1'};
 	can_msg_t tx_frame,rx_frame;
@@ -547,9 +578,7 @@ static bool can_bl_request(uint16_t node)
 	 * Request from flash loader:
 	 * ID = 0x67D Len = 8 Data = 0x40 0x00 0x10 0x00 0x00 0x00 0x00 0x00
 	 *
-	 * Expected response:
-	 * ID = 0x5FD Len = 8 Data = 0x43 0x00 0x10 0x00 0x4C 0x50 0x43 0x31
-	 * */
+	 */
 	tx_frame.id = CAN_REQUEST_ID;
 	tx_frame.length = 8;
 	tx_frame.data[0] = 0x40;
@@ -561,17 +590,23 @@ static bool can_bl_request(uint16_t node)
 	tx_frame.data[6] = 0;
 	tx_frame.data[7] = 0;
 
-	if(can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT))
-	{
-		if((rx_frame.id == CAN_RESPONSE_ID) &&
-				(rx_frame.length == 8))
-		{
-			if(memcmp(rx_frame.data,response_init,8))
-			{
-				return false;
-			}
-		}
-	} else
+	/* Expected response:
+	 * ID = 0x5FD Len = 8 Data = 0x43 0x00 0x10 0x00 0x4C 0x50 0x43 0x31
+	 *
+	 */
+	rx_frame.id = CAN_RESPONSE_ID;
+	rx_frame.length = 8;
+	rx_frame.data[0] = 0x43;
+	rx_frame.data[1] = 0x00;
+	rx_frame.data[2] = 0x10;
+	rx_frame.data[3] = 0x00;
+	rx_frame.data[4] = 'L';
+	rx_frame.data[5] = 'P';
+	rx_frame.data[6] = 'C';
+	rx_frame.data[7] = '1';
+
+
+	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,true,true,0xff))
 	{
 		return false;
 	}
@@ -586,17 +621,15 @@ static bool can_bl_request(uint16_t node)
 	tx_frame.data[6] = 0;
 	tx_frame.data[7] = 0;
 
-	if(can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT))
+	/* unlock expected response */
+	rx_frame.data[0] = 0x60;
+	rx_frame.data[2] = 0x50;
+
+
+	if(gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,true,true,0b00000101))
 	{
-		if((rx_frame.length == 8) &&
-			(rx_frame.id == CAN_RESPONSE_ID) &&
-			(rx_frame.data[0] == 0x60) &&
-			(rx_frame.data[2] == 0x50))
-		{
 			/* unlock request ACKed */
 			return true;
-		}
-
 	}
 
 	return false;
@@ -614,24 +647,26 @@ void can2_rx0_isr(void)
 		{
 			bool ext,rtr;
 			u32 fmi;
-			can_receive(CAN2, 0, false, &can_received_frame->id, &ext, &rtr, &fmi,
+			can_receive(CAN2, 0, true, &can_received_frame->id, &ext, &rtr, &fmi,
 						&can_received_frame->length, can_received_frame->data);
 			can_received_frame->received = true;
 		}
 	}
-
-	can_fifo_release(CAN2,0);
 	nvic_clear_pending_irq(NVIC_CAN2_RX0_IRQ);
 
 }
 
 
-static bool can_sendrec(can_msg_t *tx_msg, can_msg_t *rx_msg, u32 timeout)
+static bool gw_can_sendrec(can_msg_t *tx_msg, can_msg_t *rx_msg_ref, u32 timeout,
+		bool check_id, bool check_len, u8 check_data_map)
 {
 	u32 timeout_val;
 
+	can_msg_t rx_msg;
+	int data_idx;
+
 	can_disable_irq(CAN2,CAN_IER_FMPIE0);
-	can_received_frame = rx_msg;
+	can_received_frame = &rx_msg;
 	can_enable_irq(CAN2, CAN_IER_FMPIE0);
 	can_received_frame->received = false;
 	timeout_val = systick_get_value();
@@ -650,11 +685,147 @@ static bool can_sendrec(can_msg_t *tx_msg, can_msg_t *rx_msg, u32 timeout)
 			return false;
 		}
 	}while(can_received_frame->received == false);
+
 	can_received_frame->received = false;
 
 	can_disable_irq(CAN2,CAN_IER_FMPIE0);
 	can_received_frame = NULL;
 	can_enable_irq(CAN2, CAN_IER_FMPIE0);
 
+	if(check_id && (rx_msg.id != rx_msg_ref->id))
+	{
+		return false;
+	}
+	if(check_len && (rx_msg.length != rx_msg_ref->length))
+	{
+		return false;
+	}
+	for(data_idx = 0; data_idx < 8; data_idx++)
+	{
+		if(check_data_map & (1<<data_idx))
+		{
+			if(rx_msg.data[data_idx] != rx_msg_ref->data[data_idx])
+			{
+				return false;
+			}
+		}
+	}
+	memcpy(rx_msg_ref,&rx_msg,sizeof(can_msg_t));
 	return true;
+}
+
+
+static bool gw_can_erase_sector(u32 address)
+{
+	can_msg_t tx_frame,rx_frame;
+	/* sectors are erased one by one */
+	u8 sector;
+
+	/* sector size of NODE and STM32 is differnt:
+	 * STM32 is using 2kBytes while
+	 * LPC11C is using 4K sectors
+	 * Therefore we accept erase requests for the node
+	 * only on the 4K boundaries to avoid erasing of already
+	 * programmed data
+	 */
+	if(address % NODE_SECTOR_SIZE)
+	{
+		//mimic successful erase
+		return true;
+	}
+	sector = (u8)(address/NODE_SECTOR_SIZE);
+	tx_frame.id = CAN_REQUEST_ID;
+	tx_frame.length = 8;
+	rx_frame.id = CAN_RESPONSE_ID;
+	rx_frame.length = 8;
+
+	/* sector erase is a two step process:
+	 * 1. flash prepare command
+	 * 2. erase command
+	 */
+	/* flash prepare write command */
+	tx_frame.data[0] = 0x2b;
+	tx_frame.data[1] = 0x20;
+	tx_frame.data[2] = 0x50;
+	tx_frame.data[3] = 0x00;
+
+	tx_frame.data[4] = sector;
+	tx_frame.data[5] = sector;
+	tx_frame.data[6] = 0;
+	tx_frame.data[7] = 0;
+
+	/* unlock expected response */
+	rx_frame.data[0] = 0x60;
+	rx_frame.data[1] = 0x20;
+	rx_frame.data[2] = 0x50;
+
+	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,true,true,0b00000111))
+	{
+			/* write preparation request not ACKed */
+			return false;
+	}
+
+	/* flash erase command
+	 * commented out lines are kept for documentation but
+	 * these are same as the previous request
+	 */
+//	tx_frame.data[0] = 0x2b;
+	tx_frame.data[1] = 0x30;
+//	tx_frame.data[2] = 0x50;
+//	tx_frame.data[3] = 0x00;
+
+//	tx_frame.data[4] = sector;
+//	tx_frame.data[5] = sector;
+//	tx_frame.data[6] = 0;
+//	tx_frame.data[7] = 0;
+
+	/* unlock expected response */
+//	rx_frame.data[0] = 0x60;
+	rx_frame.data[1] = 0x30;
+//	rx_frame.data[2] = 0x50;
+	if(!gw_can_sendrec(&tx_frame,&rx_frame,NODE_ERASE_TIMEOUT,true,true,0b00000111))
+	{
+			/* erase request not ACKed */
+			return false;
+	}
+	return true;
+
+}
+static bool gw_can_flash_program(u32 address, u8* data, u16 len)
+{
+	can_msg_t tx_frame,rx_frame;
+	u8 sector = (u8)(address/NODE_SECTOR_SIZE);
+	tx_frame.id = CAN_REQUEST_ID;
+
+
+
+	tx_frame.length = 8;
+	rx_frame.id = CAN_RESPONSE_ID;
+	rx_frame.length = 8;
+
+	/* flash prepare write command */
+	tx_frame.data[0] = 0x2b;
+	tx_frame.data[1] = 0x20;
+	tx_frame.data[2] = 0x50;
+	tx_frame.data[3] = 0x00;
+
+	tx_frame.data[4] = sector;
+	tx_frame.data[5] = sector;
+	tx_frame.data[6] = 0;
+	tx_frame.data[7] = 0;
+
+	/* expected response */
+	rx_frame.data[0] = 0x60;
+	rx_frame.data[1] = 0x20;
+	rx_frame.data[2] = 0x50;
+
+	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,true,true,0b00000111))
+	{
+			/* write preparation request not ACKed */
+			return false;
+	}
+
+
+
+
 }
