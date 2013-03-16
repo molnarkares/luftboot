@@ -123,6 +123,8 @@ can_msg_t * can_received_frame = NULL;
 
 static bool gw_can_sendrec(can_msg_t *tx_msg, can_msg_t *rx_msg_ref, u32 timeout,
 		bool check_id, bool check_len, u8 check_data_map);
+static bool gw_can_sendrec_w(can_msg_t *tx_msg, can_msg_t *rx_msg_ref, u32 timeout,
+		bool check_id, bool check_len, u8 check_data_map);
 static bool gw_can_erase_sector(u32 address);
 static void gw_can_init(uint32_t baud);
 static bool gw_can_bl_request(uint16_t node);
@@ -219,7 +221,6 @@ static u8 usbdfu_getstatus(u32 *bwPollTimeout)
 		return DFU_STATUS_OK;
 	}
 }
-
 static void usbdfu_getstatus_complete(usbd_device *device, struct usb_setup_data *req)
 {
 	int i;
@@ -246,7 +247,6 @@ static void usbdfu_getstatus_complete(usbd_device *device, struct usb_setup_data
 				return;
 			}
 			switch(prog.buf[0]) {
-				u32 bl_address = *(u32*)(prog.buf+1);
 			case CMD_ERASE:
 				if (bl_address < APP_ADDRESS)
 				{
@@ -258,6 +258,7 @@ static void usbdfu_getstatus_complete(usbd_device *device, struct usb_setup_data
 				{
 					flash_unlock();
 					flash_erase_page(bl_address);
+					flash_lock();
 				}
 			case CMD_SETADDR:
 				prog.addr = bl_address;
@@ -266,11 +267,15 @@ static void usbdfu_getstatus_complete(usbd_device *device, struct usb_setup_data
 			u32 baseaddr = prog.addr +
 				((prog.blocknum - 2) *
 					dfu_function.wTransferSize);
-			if(baseaddr > APP_ADDRESS) // program stm32
+			if(baseaddr >= APP_ADDRESS) // program stm32
 			{
+				flash_unlock();
 				for(i = 0; i < prog.len; i += 2)
+				{
 					flash_program_half_word(baseaddr + i,
 										*(u16*)(prog.buf+i));
+				}
+				flash_lock();
 			}else // gateway
 			{
 				if(!gw_can_flash_program(baseaddr,prog.buf,prog.len))
@@ -279,18 +284,16 @@ static void usbdfu_getstatus_complete(usbd_device *device, struct usb_setup_data
 				}
 			}
 		}
-		flash_lock();
 
-		/* We jump straight to dfuDNLOAD-IDLE,
+	/*	 We jump straight to dfuDNLOAD-IDLE,
 		 * skipping dfuDNLOAD-SYNC
-		 */
+	*/
 		usbdfu_state = STATE_DFU_DNLOAD_IDLE;
 		return;
-
 	case STATE_DFU_MANIFEST:
-		/* USB device must detach, we just reset... */
+			 //USB device must detach, we just reset...
 		scb_reset_system();
-		return; /* Will never return */
+		return;  //Will never return
 	default:
 		return;
 	}
@@ -456,6 +459,7 @@ int main(void)
 				USB_REQ_TYPE_TYPE | USB_REQ_TYPE_RECIPIENT,
 				usbdfu_control_request);
 
+/*
 	if (gw_can_bl_request(0))
 	{
 //		 indicating that CAN connection is alive
@@ -473,6 +477,7 @@ int main(void)
 			}
 		}
 	}
+*/
 
 	while (1)
 	{
@@ -616,7 +621,7 @@ static bool gw_can_bl_request(uint16_t node)
 	rx_frame.data[7] = '1';
 
 
-	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0xff))
+	if(!gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0xff))
 	{
 		return false;
 	}
@@ -636,7 +641,7 @@ static bool gw_can_bl_request(uint16_t node)
 	rx_frame.data[2] = 0x50;
 
 
-	if(gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000101))
+	if(gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000101))
 	{
 			/* unlock request ACKed */
 			return true;
@@ -666,6 +671,15 @@ void can2_rx0_isr(void)
 
 }
 
+
+static bool gw_can_sendrec_w(can_msg_t *tx_msg, can_msg_t *rx_msg_ref, u32 timeout,
+		bool check_id, bool check_len, u8 check_data_map) {
+	bool retval;
+	led_set(1,1);
+	retval = gw_can_sendrec(tx_msg,rx_msg_ref,timeout,check_id,check_len,check_data_map);
+	led_set(1,0);
+	return retval;
+}
 
 static bool gw_can_sendrec(can_msg_t *tx_msg, can_msg_t *rx_msg_ref, u32 timeout,
 		bool check_id, bool check_len, u8 check_data_map)
@@ -769,7 +783,7 @@ static bool gw_can_erase_sector(u32 address)
 	rx_frame.data[1] = 0x20;
 	rx_frame.data[2] = 0x50;
 
-	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
+	if(!gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
 	{
 			/* write preparation request not ACKed */
 			return false;
@@ -793,7 +807,7 @@ static bool gw_can_erase_sector(u32 address)
 //	rx_frame.data[0] = 0x60;
 	rx_frame.data[1] = 0x30;
 //	rx_frame.data[2] = 0x50;
-	if(!gw_can_sendrec(&tx_frame,&rx_frame,NODE_ERASE_TIMEOUT,false,true,0b00000111))
+	if(!gw_can_sendrec_w(&tx_frame,&rx_frame,NODE_ERASE_TIMEOUT,false,true,0b00000111))
 	{
 			/* erase request not ACKed */
 			return false;
@@ -831,7 +845,7 @@ static bool gw_can_flash_program(u32 address, u8* data, u16 len)
 	rx_frame.data[1] = 0x20;
 	rx_frame.data[2] = 0x50;
 
-	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
+	if(!gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
 	{
 			/* write preparation request not ACKed */
 			return false;
@@ -853,7 +867,7 @@ static bool gw_can_flash_program(u32 address, u8* data, u16 len)
 	rx_frame.data[1] = 0x15;
 	rx_frame.data[2] = 0x50;
 
-	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
+	if(!gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
 	{
 			/* RAM write address request not ACKed */
 			return false;
@@ -876,7 +890,7 @@ static bool gw_can_flash_program(u32 address, u8* data, u16 len)
 	rx_frame.data[1] = 0x50;
 	rx_frame.data[2] = 0x1f;
 
-	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
+	if(!gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
 	{
 		//segmented write first frame not acked
 			return false;
@@ -896,7 +910,7 @@ static bool gw_can_flash_program(u32 address, u8* data, u16 len)
 		 //expected response
 		rx_frame.data[0] = 0x20 | toggle;
 
-		if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000001))
+		if(!gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000001))
 		{
 		//		 RAM write address request not ACKed
 				return false;
@@ -915,7 +929,7 @@ static bool gw_can_flash_program(u32 address, u8* data, u16 len)
 	 //expected response
 	rx_frame.data[0] = 0x20 | toggle;
 
-	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000001))
+	if(!gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000001))
 	{
 	//		 RAM write address request not ACKed
 			return false;
@@ -940,7 +954,7 @@ static bool gw_can_flash_program(u32 address, u8* data, u16 len)
 	rx_frame.data[2] = 0x50;
 	rx_frame.length = 8;
 
-	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
+	if(!gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
 	{
 			/* Flash address request not ACKed */
 			return false;
@@ -964,7 +978,7 @@ static bool gw_can_flash_program(u32 address, u8* data, u16 len)
 //	rx_frame.data[2] = 0x50;
 //	rx_frame.length = 8;
 
-	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
+	if(!gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
 	{
 			/* RAM  address request not ACKed */
 			return false;
@@ -987,7 +1001,7 @@ static bool gw_can_flash_program(u32 address, u8* data, u16 len)
 	rx_frame.data[2] = 0x50;
 	rx_frame.length = 8;
 
-	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
+	if(!gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
 	{
 			/* size address request not ACKed */
 			return false;
