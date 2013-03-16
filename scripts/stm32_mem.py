@@ -24,7 +24,7 @@ from sys import stdout, argv
 import usb
 import dfu
 
-APP_ADDRESS = 0x08002000
+APP_ADDRESS = 0x08004000
 SECTOR_SIZE = 2048
 
 CMD_GETCOMMANDS =            0x00
