@@ -455,18 +455,25 @@ int main(void)
 				USB_REQ_TYPE_CLASS | USB_REQ_TYPE_INTERFACE,
 				USB_REQ_TYPE_TYPE | USB_REQ_TYPE_RECIPIENT,
 				usbdfu_control_request);
+
 	if (gw_can_bl_request(0))
 	{
-		/* indicating that CAN connection is alive */
+//		 indicating that CAN connection is alive
 		led_set(1,1);
 		if(gw_can_erase_sector(0))
 		{
+			int ctr;
+			for (ctr = 0; ctr < 256; ctr++)
+			{
+				prog.buf[ctr] = ctr;
+			}
 			if(gw_can_flash_program(0,prog.buf,256))
 			{
 				led_set(1,0);
 			}
 		}
 	}
+
 	while (1)
 	{
 		usbd_poll(device);
@@ -797,6 +804,11 @@ static bool gw_can_erase_sector(u32 address)
 static bool gw_can_flash_program(u32 address, u8* data, u16 len)
 {
 	can_msg_t tx_frame,rx_frame;
+	int idx = 0;
+	int toggle = 0;
+	int data_ctr;
+	u16 len_save = len;
+	// calculate sector id (each sectors are 4Kbytes long
 	u8 sector = (u8)(address/NODE_SECTOR_SIZE);
 	tx_frame.id = CAN_REQUEST_ID;
 	tx_frame.length = 8;
@@ -866,34 +878,121 @@ static bool gw_can_flash_program(u32 address, u8* data, u16 len)
 
 	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
 	{
-	//		 RAM write address request not ACKed
+		//segmented write first frame not acked
 			return false;
 	}
+	/* segmented ack is one byte long */
+	rx_frame.length = 1;
 	while(len > 7)
 	{
-		static int toggle = 0;
 	//	 Segmented download command
-		tx_frame.data[0] = 0x21;
-		tx_frame.data[1] = 0x50;
-		tx_frame.data[2] = 0x1f;
-		tx_frame.data[3] = 0x01;
+		tx_frame.data[0] = toggle;
 
-		tx_frame.data[4] = (u8)len;
-		tx_frame.data[5] = (u8)(len>>8);
-		tx_frame.data[6] = 0;
-		tx_frame.data[7] = 0;
+		for(data_ctr = 1; data_ctr <8; data_ctr++)
+		{
+			tx_frame.data[data_ctr] = data[idx++];
+		}
 
 		 //expected response
-		rx_frame.data[0] = 0x60;
-		rx_frame.data[1] = 0x50;
-		rx_frame.data[2] = 0x1f;
+		rx_frame.data[0] = 0x20 | toggle;
 
-		if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
+		if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000001))
 		{
 		//		 RAM write address request not ACKed
 				return false;
 		}
 		len -= 7;
+		toggle = (toggle != 0) ? 0 : (1<<4);
+	}
+//	 Segmented download command
+	tx_frame.data[0] = toggle|((7-len)<<1)|0x01;
+
+	for(data_ctr = 1; len>0; len--)
+	{
+		tx_frame.data[data_ctr++] = data[idx++];
 	}
 
+	 //expected response
+	rx_frame.data[0] = 0x20 | toggle;
+
+	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000001))
+	{
+	//		 RAM write address request not ACKed
+			return false;
+	}
+
+	/* Initiate programming bytes to flash */
+
+	/* Flash Address (DST) */
+	tx_frame.data[0] = 0x23;
+	tx_frame.data[1] = 0x50;
+	tx_frame.data[2] = 0x50;
+	tx_frame.data[3] = 0x01;
+
+	tx_frame.data[4] = (u8)address;
+	tx_frame.data[5] = (u8)(address>>8);
+	tx_frame.data[6] = (u8)(address>>16);
+	tx_frame.data[7] = (u8)(address>>24);
+
+	/* expected response */
+	rx_frame.data[0] = 0x60;
+	rx_frame.data[1] = 0x50;
+	rx_frame.data[2] = 0x50;
+	rx_frame.length = 8;
+
+	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
+	{
+			/* Flash address request not ACKed */
+			return false;
+	}
+
+	/* RAM Address (SRC) */
+
+//	tx_frame.data[0] = 0x23;
+//	tx_frame.data[1] = 0x50;
+//	tx_frame.data[2] = 0x50;
+	tx_frame.data[3] = 0x02;
+
+	tx_frame.data[4] = (u8)NODE_RAM_START;
+	tx_frame.data[5] = (u8)(NODE_RAM_START>>8);
+	tx_frame.data[6] = (u8)(NODE_RAM_START>>16);
+	tx_frame.data[7] = (u8)(NODE_RAM_START>>24);
+
+	/* expected response */
+//	rx_frame.data[0] = 0x60;
+//	rx_frame.data[1] = 0x50;
+//	rx_frame.data[2] = 0x50;
+//	rx_frame.length = 8;
+
+	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
+	{
+			/* RAM  address request not ACKed */
+			return false;
+	}
+
+	/* length and initiate programming */
+	tx_frame.data[0] = 0x2b;
+	tx_frame.data[1] = 0x50;
+	tx_frame.data[2] = 0x50;
+	tx_frame.data[3] = 0x03;
+
+	tx_frame.data[4] = (u8)len_save;
+	tx_frame.data[5] = (u8)(len_save>>8);
+	tx_frame.data[6] = 0;
+	tx_frame.data[7] = 0;
+
+	/* expected response */
+	rx_frame.data[0] = 0x60;
+	rx_frame.data[1] = 0x50;
+	rx_frame.data[2] = 0x50;
+	rx_frame.length = 8;
+
+	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
+	{
+			/* size address request not ACKed */
+			return false;
+	}
+
+
+	return true;
 }
