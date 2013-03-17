@@ -24,7 +24,7 @@ BMP_PORT =
 VERSION = V1.1
 DEV_SERIAL = NSERIAL
 
-CFLAGS += -g -Istm32/include -mcpu=cortex-m3 -mthumb -msoft-float -DSTM32F1 -I$(LIBOPENCM3)/include --function-sections --data-sections -DVERSION="\"$(VERSION)\"" -DDEV_SERIAL="\"$(DEV_SERIAL)\""
+CFLAGS += -Os -g -Istm32/include -mcpu=cortex-m3 -mthumb -msoft-float -DSTM32F1 -I$(LIBOPENCM3)/include --function-sections --data-sections -DVERSION="\"$(VERSION)\"" -DDEV_SERIAL="\"$(DEV_SERIAL)\""
 LDFLAGS_BOOT = -lopencm3_stm32f1 -Wl,--defsym,_stack=0x20005000 \
 	-Wl,-T,luftboot.ld -nostartfiles -lc -lnosys -Wl,-Map=mapfile \
 	-mthumb -march=armv7 -mcpu=cortex-m3 -mfix-cortex-m3-ldrd -msoft-float -L$(LIBOPENCM3)/lib -Wl,--gc-sections
@@ -44,7 +44,7 @@ endif
 
 all: luftboot.bin luftboot.hex
 
-luftboot.elf: luftboot.o $(LIBOPENCM3)/lib/libopencm3_stm32f1.a
+luftboot.elf: luftboot.o gw_can.o $(LIBOPENCM3)/lib/libopencm3_stm32f1.a
 	$(CC) $^ -o $@ $(LDFLAGS_BOOT)
 
 luftboot.bin: luftboot.elf
@@ -54,7 +54,7 @@ luftboot.hex: luftboot.elf
 	$(OBJCOPY) -O ihex $^ $@
 
 clean:
-	-rm -rf luftboot.o luftboot.elf luftboot.bin luftboot.hex mapfile
+	-rm -rf *.o luftboot.elf luftboot.bin luftboot.hex mapfile
 
 ifeq ($(BMP_PORT),)
 flash: luftboot.hex
