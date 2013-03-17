@@ -125,7 +125,7 @@ class dfu_device(object):
 
 
 	def make_idle(self):
-		retries = 300
+		retries = 3
 		while retries:
 			try:
 				status = self.get_status()
