@@ -5,7 +5,7 @@ OBJCOPY = $(PREFIX)-objcopy
 
 GDB?=$(PREFIX)-gdb
 
-LIBOPENCM3 ?= libopencm3
+#LIBOPENCM3 ?= libopencm3
 
 LIBOPENCM3 ?= ../../libopencm3
 OOCD_INTERFACE  ?= jlink
@@ -32,7 +32,7 @@ LDFLAGS_BOOT = -lopencm3_stm32f1 -Wl,--defsym,_stack=0x20005000 \
 	-Wl,-T,luftboot.ld $(SPECS) -nostartfiles -lc -lnosys -Wl,-Map=mapfile \
 	-mthumb -mcpu=cortex-m3 -mfix-cortex-m3-ldrd -msoft-float -Wl,--gc-sections
 LDFLAGS_BOOT += -Wl,--section-start=.devserial=0x8001FF0
-LDFLAGS = $(LDFLAGS_BOOT) -Wl,-Ttext=0x8002000
+LDFLAGS = $(LDFLAGS_BOOT) -Wl,-Ttext=0x8004000
 
 ifneq ($(V),1)
 Q := @
