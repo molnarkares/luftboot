@@ -1,17 +1,11 @@
-CROSS_COMPILE ?= arm-none-eabi-
+PREFIX ?= arm-none-eabi
 
-# if cross compiler is not in path, try picking it up from the paparazzi package
-HAVE_ARM_NONE_EABI_GCC := $(shell which arm-none-eabi-gcc)
-ifeq ($(strip $(HAVE_ARM_NONE_EABI_GCC)),)
-TOOLCHAIN=$(shell find -L /opt/paparazzi/arm-multilib ~/sat -maxdepth 1 -type d -name arm-none-eabi 2>/dev/null | head -n 1)
-TOOLCHAIN_DIR=$(shell dirname $(TOOLCHAIN))/bin
-CROSS_COMPILE=$(TOOLCHAIN_DIR)/arm-none-eabi-
-else
-TOOLCHAIN_DIR=$(shell dirname `which arm-none-eabi-gcc`)
-endif
+CC = $(PREFIX)-gcc
+OBJCOPY = $(PREFIX)-objcopy
 
-CC = $(CROSS_COMPILE)gcc
-OBJCOPY = $(CROSS_COMPILE)objcopy
+GDB?=$(PREFIX)-gdb
+
+LIBOPENCM3 ?= libopencm3
 
 LIBOPENCM3 ?= ../../libopencm3
 OOCD_INTERFACE  ?= jlink
@@ -24,12 +18,21 @@ BMP_PORT =
 VERSION = V1.1
 DEV_SERIAL = NSERIAL
 
-CFLAGS += -Os -g -Istm32/include -mcpu=cortex-m3 -mthumb -msoft-float -DSTM32F1 -I$(LIBOPENCM3)/include --function-sections --data-sections -DVERSION="\"$(VERSION)\"" -DDEV_SERIAL="\"$(DEV_SERIAL)\""
+# Check if we are using gcc-arm-embedded compiler
+# if so use nano.specs to save space
+ifeq ($(shell $(CC) -specs=nano.specs 2>&1 | grep nano.specs),)
+$(info Using gcc-arm-embedded, nano specs enabled!!!)
+SPECS = -specs=nano.specs
+else
+$(info Not using gcc-arm-embedded, nano specs disabled!!!)
+endif
+
+CFLAGS += -Os -g3 -Istm32/include -mcpu=cortex-m3 -mthumb -msoft-float -DSTM32F1 --function-sections --data-sections -DVERSION="\"$(VERSION)\"" -DDEV_SERIAL="\"$(DEV_SERIAL)\""
 LDFLAGS_BOOT = -lopencm3_stm32f1 -Wl,--defsym,_stack=0x20005000 \
-	-Wl,-T,luftboot.ld -nostartfiles -lc -lnosys -Wl,-Map=mapfile \
-	-mthumb -march=armv7 -mcpu=cortex-m3 -mfix-cortex-m3-ldrd -msoft-float -L$(LIBOPENCM3)/lib -Wl,--gc-sections
-LDFLAGS_BOOT += -Wl,--section-start=.devserial=0x8003FF0
-LDFLAGS = $(LDFLAGS_BOOT) -Wl,-Ttext=0x8004000
+	-Wl,-T,luftboot.ld $(SPECS) -nostartfiles -lc -lnosys -Wl,-Map=mapfile \
+	-mthumb -mcpu=cortex-m3 -mfix-cortex-m3-ldrd -msoft-float -Wl,--gc-sections
+LDFLAGS_BOOT += -Wl,--section-start=.devserial=0x8001FF0
+LDFLAGS = $(LDFLAGS_BOOT) -Wl,-Ttext=0x8002000
 
 ifneq ($(V),1)
 Q := @
@@ -67,7 +70,7 @@ flash: luftboot.hex
 		-c reset \
 		-c shutdown
 else
-flash: luftboot
+flash: luftboot.elf
 	@echo "Using Black Magic Probe"
 	@echo "Using GDB = $(GDB)"
 	@echo "  BMP\t$<"
