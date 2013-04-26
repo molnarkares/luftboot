@@ -26,8 +26,7 @@
 									<listOptionValue builtIn="false" value="STM32F1"/>
 								</option>
 								<option id="gnu.c.compiler.option.include.paths.597654652" name="Include paths (-I)" superClass="gnu.c.compiler.option.include.paths" valueType="includePath">
-									<listOptionValue builtIn="false" value="/opt/paparazzi/arm-multilib/include"/>
-									<listOptionValue builtIn="false" value="/usr/local/arm-none-eabi/include"/>
+									<listOptionValue builtIn="false" value="/usr/arm-none-eabi/include"/>
 								</option>
 								<inputType id="cdt.managedbuild.tool.gnu.c.compiler.input.495185163" superClass="cdt.managedbuild.tool.gnu.c.compiler.input"/>
 							</tool>
@@ -36,14 +35,13 @@
 									<listOptionValue builtIn="false" value="STM32F1"/>
 								</option>
 								<option id="gnu.cpp.compiler.option.include.paths.1267493239" name="Include paths (-I)" superClass="gnu.cpp.compiler.option.include.paths" valueType="includePath">
-									<listOptionValue builtIn="false" value="/opt/paparazzi/arm-multilib/include"/>
-									<listOptionValue builtIn="false" value="/usr/local/arm-none-eabi/include"/>
+									<listOptionValue builtIn="false" value="/usr/arm-none-eabi/include"/>
 								</option>
 								<inputType id="cdt.managedbuild.tool.gnu.cpp.compiler.input.1394582430" superClass="cdt.managedbuild.tool.gnu.cpp.compiler.input"/>
 							</tool>
 							<tool id="cdt.managedbuild.tool.gnu.cross.c.linker.255980648" name="Cross GCC Linker" superClass="cdt.managedbuild.tool.gnu.cross.c.linker"/>
 							<tool id="cdt.managedbuild.tool.gnu.cross.cpp.linker.898345400" name="Cross G++ Linker" superClass="cdt.managedbuild.tool.gnu.cross.cpp.linker">
-								<option id="gnu.cpp.link.option.libs.1204211182" name="Libraries (-l)" superClass="gnu.cpp.link.option.libs" valueType="libs"/>
+								<option id="gnu.cpp.link.option.libs.1204211182" name="Libraries (-l)" superClass="gnu.cpp.link.option.libs"/>
 								<inputType id="cdt.managedbuild.tool.gnu.cpp.linker.input.1566804132" superClass="cdt.managedbuild.tool.gnu.cpp.linker.input">
 									<additionalInput kind="additionalinputdependency" paths="$(USER_OBJS)"/>
 									<additionalInput kind="additionalinput" paths="$(LIBS)"/>
@@ -52,7 +50,7 @@
 							<tool id="cdt.managedbuild.tool.gnu.cross.archiver.1633287544" name="Cross GCC Archiver" superClass="cdt.managedbuild.tool.gnu.cross.archiver"/>
 							<tool id="cdt.managedbuild.tool.gnu.cross.assembler.456451172" name="Cross GCC Assembler" superClass="cdt.managedbuild.tool.gnu.cross.assembler">
 								<option id="gnu.both.asm.option.include.paths.133166364" name="Include paths (-I)" superClass="gnu.both.asm.option.include.paths" valueType="includePath">
-									<listOptionValue builtIn="false" value="/usr/local/arm-none-eabi/include"/>
+									<listOptionValue builtIn="false" value="/usr/arm-none-eabi/include"/>
 								</option>
 								<inputType id="cdt.managedbuild.tool.gnu.assembler.input.1612463041" superClass="cdt.managedbuild.tool.gnu.assembler.input"/>
 							</tool>
