@@ -46,7 +46,7 @@
 #define DEV_SERIAL      "NSERIAL"
 #endif
 
-#define APP_ADDRESS		0x08004000
+#define APP_ADDRESS		0x08002000
 #define APP_END_ADDRESS	0x08040000
 #define SECTOR_SIZE	2048
 
