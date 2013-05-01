@@ -185,16 +185,18 @@ static u8 usbdfu_getstatus(u32 *bwPollTimeout)
 	case STATE_DFU_DNLOAD_SYNC:
 		usbdfu_state = STATE_DFU_DNBUSY;
 		*bwPollTimeout = 100;
-		return DFU_STATUS_OK;
+		break;
 
 	case STATE_DFU_MANIFEST_SYNC:
 		/* Device will reset when read is complete */
 		usbdfu_state = STATE_DFU_MANIFEST;
-		return DFU_STATUS_OK;
+		break;
 
 	default:
-		return DFU_STATUS_OK;
+		break;
 	}
+	return DFU_STATUS_OK;
+
 }
 static void usbdfu_getstatus_complete(usbd_device *device, struct usb_setup_data *req)
 {
