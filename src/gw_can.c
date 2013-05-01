@@ -294,20 +294,23 @@ bool gw_can_erase_sector(u32 address)
 	 * 2. erase command
 	 */
 	/* flash prepare write command */
-	tx_frame.data[0] = 0x2b;
-	tx_frame.data[1] = 0x20;
-	tx_frame.data[2] = 0x50;
-	tx_frame.data[3] = 0x00;
+	*(uint32_t*)(&tx_frame.data[0]) = 0x0050202b;
+//	tx_frame.data[0] = 0x2b;
+//	tx_frame.data[1] = 0x20;
+//	tx_frame.data[2] = 0x50;
+//	tx_frame.data[3] = 0x00;
 
 	tx_frame.data[4] = sector;
 	tx_frame.data[5] = sector;
-	tx_frame.data[6] = 0;
-	tx_frame.data[7] = 0;
+	*(uint16_t*)(&tx_frame.data[6]) = 0;
+//	tx_frame.data[6] = 0;
+//	tx_frame.data[7] = 0;
 
 	/* prepare expected response */
-	rx_frame.data[0] = 0x60;
-	rx_frame.data[1] = 0x20;
-	rx_frame.data[2] = 0x50;
+	*(uint32_t *)(&rx_frame.data[0]) = 0x00502060;
+//	rx_frame.data[0] = 0x60;
+//	rx_frame.data[1] = 0x20;
+//	rx_frame.data[2] = 0x50;
 
 	if(!gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
 	{
@@ -356,20 +359,23 @@ bool gw_can_flash_program(u32 address, u8* data, u16 len)
 	rx_frame.length = 8;
 
 	/* flash prepare write command */
-	tx_frame.data[0] = 0x2b;
-	tx_frame.data[1] = 0x20;
-	tx_frame.data[2] = 0x50;
-	tx_frame.data[3] = 0x00;
+	*(uint32_t*)(&tx_frame.data[0]) = 0x0050202b;
+//	tx_frame.data[0] = 0x2b;
+//	tx_frame.data[1] = 0x20;
+//	tx_frame.data[2] = 0x50;
+//	tx_frame.data[3] = 0x00;
 
 	tx_frame.data[4] = sector;
 	tx_frame.data[5] = sector;
-	tx_frame.data[6] = 0;
-	tx_frame.data[7] = 0;
+	*(uint16_t*)(&tx_frame.data[6]) = 0;
+//	tx_frame.data[6] = 0;
+//	tx_frame.data[7] = 0;
 
 	/* expected response */
-	rx_frame.data[0] = 0x60;
-	rx_frame.data[1] = 0x20;
-	rx_frame.data[2] = 0x50;
+	*(uint32_t*)(&rx_frame.data[0]) = 0x00502060;
+//	rx_frame.data[0] = 0x60;
+//	rx_frame.data[1] = 0x20;
+//	rx_frame.data[2] = 0x50;
 
 	if(!gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
 	{
@@ -378,20 +384,23 @@ bool gw_can_flash_program(u32 address, u8* data, u16 len)
 	}
 
 	/* RAM write address command */
-	tx_frame.data[0] = 0x23;
-	tx_frame.data[1] = 0x15;
-	tx_frame.data[2] = 0x50;
-	tx_frame.data[3] = 0x00;
+	*(uint32_t*)(&tx_frame.data[0]) = 0x00501523;
+//	tx_frame.data[0] = 0x23;
+//	tx_frame.data[1] = 0x15;
+//	tx_frame.data[2] = 0x50;
+//	tx_frame.data[3] = 0x00;
 
-	tx_frame.data[4] = (u8)NODE_RAM_START;
-	tx_frame.data[5] = (u8)(NODE_RAM_START>>8);
-	tx_frame.data[6] = (u8)(NODE_RAM_START>>16);
-	tx_frame.data[7] = (u8)(NODE_RAM_START>>24);
+	*(uint32_t*)(&tx_frame.data[4]) = NODE_RAM_START;
+//	tx_frame.data[4] = (u8)NODE_RAM_START;
+//	tx_frame.data[5] = (u8)(NODE_RAM_START>>8);
+//	tx_frame.data[6] = (u8)(NODE_RAM_START>>16);
+//	tx_frame.data[7] = (u8)(NODE_RAM_START>>24);
 
 	/* expected response */
-	rx_frame.data[0] = 0x60;
-	rx_frame.data[1] = 0x15;
-	rx_frame.data[2] = 0x50;
+	*(uint32_t*)(&rx_frame.data[0]) = 0x00501560;
+//	rx_frame.data[0] = 0x60;
+//	rx_frame.data[1] = 0x15;
+//	rx_frame.data[2] = 0x50;
 
 	if(!gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
 	{
@@ -401,20 +410,24 @@ bool gw_can_flash_program(u32 address, u8* data, u16 len)
 
 
 //	 Segmented download command
-	tx_frame.data[0] = 0x21;
-	tx_frame.data[1] = 0x50;
-	tx_frame.data[2] = 0x1f;
-	tx_frame.data[3] = 0x01;
+	*(uint32_t*)(&tx_frame.data[0]) = 0x011f5021;
+//	tx_frame.data[0] = 0x21;
+//	tx_frame.data[1] = 0x50;
+//	tx_frame.data[2] = 0x1f;
+//	tx_frame.data[3] = 0x01;
 
-	tx_frame.data[4] = (u8)len;
-	tx_frame.data[5] = (u8)(len>>8);
-	tx_frame.data[6] = 0;
-	tx_frame.data[7] = 0;
+	*(uint16_t*)(&tx_frame.data[4]) = len;
+//	tx_frame.data[4] = (u8)len;
+//	tx_frame.data[5] = (u8)(len>>8);
+	*(uint16_t*)(&tx_frame.data[6]) = 0;
+//	tx_frame.data[6] = 0;
+//	tx_frame.data[7] = 0;
 
 	 //expected response
-	rx_frame.data[0] = 0x60;
-	rx_frame.data[1] = 0x50;
-	rx_frame.data[2] = 0x1f;
+	*(uint32_t*)(&rx_frame.data[0]) = 0x001f5060;
+//	rx_frame.data[0] = 0x60;
+//	rx_frame.data[1] = 0x50;
+//	rx_frame.data[2] = 0x1f;
 
 	if(!gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
 	{
@@ -456,20 +469,23 @@ bool gw_can_flash_program(u32 address, u8* data, u16 len)
 	/* Initiate programming bytes to flash */
 
 	/* Flash Address (DST) */
-	tx_frame.data[0] = 0x23;
-	tx_frame.data[1] = 0x50;
-	tx_frame.data[2] = 0x50;
-	tx_frame.data[3] = 0x01;
+	*(uint32_t*)(&tx_frame.data[0]) = 0x01505023;
+//	tx_frame.data[0] = 0x23;
+//	tx_frame.data[1] = 0x50;
+//	tx_frame.data[2] = 0x50;
+//	tx_frame.data[3] = 0x01;
 
-	tx_frame.data[4] = (u8)address;
-	tx_frame.data[5] = (u8)(address>>8);
-	tx_frame.data[6] = (u8)(address>>16);
-	tx_frame.data[7] = (u8)(address>>24);
+	*(uint32_t*)(&tx_frame.data[4]) = address;
+//	tx_frame.data[4] = (u8)address;
+//	tx_frame.data[5] = (u8)(address>>8);
+//	tx_frame.data[6] = (u8)(address>>16);
+//	tx_frame.data[7] = (u8)(address>>24);
 
 	/* expected response */
-	rx_frame.data[0] = 0x60;
-	rx_frame.data[1] = 0x50;
-	rx_frame.data[2] = 0x50;
+	*(uint32_t*)(&rx_frame.data[0]) = 0x00505060;
+//	rx_frame.data[0] = 0x60;
+//	rx_frame.data[1] = 0x50;
+//	rx_frame.data[2] = 0x50;
 	rx_frame.length = 8;
 
 	if(!gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
@@ -484,11 +500,11 @@ bool gw_can_flash_program(u32 address, u8* data, u16 len)
 //	tx_frame.data[1] = 0x50;
 //	tx_frame.data[2] = 0x50;
 	tx_frame.data[3] = 0x02;
-
-	tx_frame.data[4] = (u8)NODE_RAM_START;
-	tx_frame.data[5] = (u8)(NODE_RAM_START>>8);
-	tx_frame.data[6] = (u8)(NODE_RAM_START>>16);
-	tx_frame.data[7] = (u8)(NODE_RAM_START>>24);
+	*(uint32_t*)(&tx_frame.data[4]) = NODE_RAM_START;
+//	tx_frame.data[4] = (u8)NODE_RAM_START;
+//	tx_frame.data[5] = (u8)(NODE_RAM_START>>8);
+//	tx_frame.data[6] = (u8)(NODE_RAM_START>>16);
+//	tx_frame.data[7] = (u8)(NODE_RAM_START>>24);
 
 	/* expected response */
 //	rx_frame.data[0] = 0x60;
@@ -503,20 +519,23 @@ bool gw_can_flash_program(u32 address, u8* data, u16 len)
 	}
 
 	/* length and initiate programming */
-	tx_frame.data[0] = 0x2b;
-	tx_frame.data[1] = 0x50;
-	tx_frame.data[2] = 0x50;
-	tx_frame.data[3] = 0x03;
-
-	tx_frame.data[4] = (u8)len_save;
-	tx_frame.data[5] = (u8)(len_save>>8);
-	tx_frame.data[6] = 0;
-	tx_frame.data[7] = 0;
+	*(uint32_t*)(&tx_frame.data[0]) = 0x0350502b;
+//	tx_frame.data[0] = 0x2b;
+//	tx_frame.data[1] = 0x50;
+//	tx_frame.data[2] = 0x50;
+//	tx_frame.data[3] = 0x03;
+	*(uint16_t*)(&tx_frame.data[4]) = len_save;
+//	tx_frame.data[4] = (u8)len_save;
+//	tx_frame.data[5] = (u8)(len_save>>8);
+	*(uint16_t*)(&tx_frame.data[6]) = 0;
+//	tx_frame.data[6] = 0;
+//	tx_frame.data[7] = 0;
 
 	/* expected response */
-	rx_frame.data[0] = 0x60;
-	rx_frame.data[1] = 0x50;
-	rx_frame.data[2] = 0x50;
+	*(uint32_t*)(&rx_frame.data[0]) = 0x00505060;
+//	rx_frame.data[0] = 0x60;
+//	rx_frame.data[1] = 0x50;
+//	rx_frame.data[2] = 0x50;
 	rx_frame.length = 8;
 
 	if(!gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
