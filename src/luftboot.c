@@ -198,6 +198,7 @@ static u8 usbdfu_getstatus(u32 *bwPollTimeout)
 	return DFU_STATUS_OK;
 
 }
+
 static void usbdfu_getstatus_complete(usbd_device *device, struct usb_setup_data *req)
 {
 	int i;
@@ -237,8 +238,10 @@ static void usbdfu_getstatus_complete(usbd_device *device, struct usb_setup_data
 					flash_erase_page(bl_address);
 					flash_lock();
 				}
+				break;
 			case CMD_SETADDR:
 				prog.addr = bl_address;
+				break;
 			}
 		} else
 		{
@@ -324,7 +327,7 @@ static int usbdfu_control_request(usbd_device *device, struct usb_setup_data *re
 		return 1;
 		}
 	case DFU_GETSTATE:
-		/* Return state with no state transision */
+		/* Return state with no state transition*/
 		*buf[0] = usbdfu_state;
 		*len = 1;
 		return 1;
@@ -468,10 +471,11 @@ static char *get_dev_unique_id(char *s)
 		s[i+8] = ((*unique_id >> 4) & 0xF) + '0';
 		s[i+8+1] = (*unique_id++ & 0xF) + '0';
 	}
-	for(i = 0; i < 24; i++)
-		if(s[i+8] > '9')
+	for(i = 0; i < 24; i++) {
+		if(s[i+8] > '9') {
 			s[i+8] += 'A' - '9' - 1;
-
+		}
+	}
 	return s;
 }
 
@@ -479,4 +483,3 @@ void sys_tick_handler()
 {
 	led_advance();
 }
-

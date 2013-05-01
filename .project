@@ -3,6 +3,7 @@
 	<name>MyGIT LuftBoot</name>
 	<comment></comment>
 	<projects>
+		<project>libopencm3</project>
 	</projects>
 	<buildSpec>
 		<buildCommand>

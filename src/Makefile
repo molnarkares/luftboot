@@ -31,8 +31,8 @@ CFLAGS += -Os -g3 -I$(LIBOPENCM3)/include -Istm32/include -mcpu=cortex-m3 -mthum
 LDFLAGS_BOOT = -L $(LIBOPENCM3)/lib -lopencm3_stm32f1 -Wl,--defsym,_stack=0x20005000 \
 	-Wl,-T,luftboot.ld $(SPECS) -nostartfiles -lc -lnosys -Wl,-Map=mapfile \
 	-mthumb -mcpu=cortex-m3 -mfix-cortex-m3-ldrd -msoft-float -Wl,--gc-sections
-LDFLAGS_BOOT += -Wl,--section-start=.devserial=0x8001FF0
-LDFLAGS = $(LDFLAGS_BOOT) -Wl,-Ttext=0x8004000
+LDFLAGS_BOOT += -Wl,--section-start=.devserial=0x8001FF8
+LDFLAGS = $(LDFLAGS_BOOT) -Wl,-Ttext=0x8002000
 
 ifneq ($(V),1)
 Q := @
