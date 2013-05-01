@@ -40,10 +40,10 @@
 #define NODE_ERASE_TIMEOUT  (120*9000)	// 120 ms
 #define SYSTICK_TIMEOUT_100MS	900000
 
-const u8 bl_id_response[8]	= {0x43,0x00,0x10,0x00,'L','P','C','1'};
-const u8 bl_id_request[8] 	= {0x40,0x00,0x10,0x00,0x00,0x00,0x00,0x00};
-const u8 unlock_request[8] 	= {0x2b,0x00,0x50,0x00,0x5a,0x5a,0x00,0x00};
-const u8 unlock_response[8] = {0x60,0x00,0x50,0x00,0x00,0x00,0x00,0x00};
+//const u8 bl_id_response[8]	= {0x43,0x00,0x10,0x00,'L','P','C','1'};
+//const u8 bl_id_request[8] 	= {0x40,0x00,0x10,0x00,0x00,0x00,0x00,0x00};
+//const u8 unlock_request[8] 	= {0x2b,0x00,0x50,0x00,0x5a,0x5a,0x00,0x00};
+//const u8 unlock_response[8] = {0x60,0x00,0x50,0x00,0x00,0x00,0x00,0x00};
 
 typedef struct {
 	u32 id;
@@ -148,7 +148,13 @@ bool gw_can_bl_request(uint16_t node)
 	 */
 	tx_frame.id = CAN_REQUEST_ID;
 	tx_frame.length = 8;
-	memcpy(tx_frame.data, bl_id_request,8);
+
+//	const u8 bl_id_request[8] 	= {0x40,0x00,0x10,0x00,0x00,0x00,0x00,0x00};
+
+	*(uint32_t*)(&tx_frame.data[0]) = 0x00100040;
+	*(uint32_t*)(&tx_frame.data[4]) = 0;
+
+//	memcpy(tx_frame.data, bl_id_request,8);
 
 	/* Expected response:
 	 * ID = 0x5FD Len = 8 Data = 0x43 0x00 0x10 0x00 0x4C 0x50 0x43 0x31
@@ -156,7 +162,11 @@ bool gw_can_bl_request(uint16_t node)
 	 */
 	//rx_frame.id = CAN_RESPONSE_ID;
 	rx_frame.length = 8;
-	memcpy(rx_frame.data, bl_id_response,8);
+
+	//	const u8 bl_id_response[8]	= {0x43,0x00,0x10,0x00,'L','P','C','1'};
+	*(uint32_t*)(&rx_frame.data[0]) = 0x00100043;
+	*(uint32_t*)(&rx_frame.data[4]) = 0x3143504c;
+//	memcpy(rx_frame.data, bl_id_response,8);
 
 
 	if(!gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0xff))
@@ -164,8 +174,14 @@ bool gw_can_bl_request(uint16_t node)
 		return false;
 	}
 	/* unlock request */
-	memcpy(tx_frame.data, unlock_request,8);
-	memcpy(rx_frame.data, unlock_response,8);
+//	const u8 unlock_request[8] 	= {0x2b,0x00,0x50,0x00,0x5a,0x5a,0x00,0x00};
+//	const u8 unlock_response[8] = {0x60,0x00,0x50,0x00,0x00,0x00,0x00,0x00};
+	*(uint32_t*)(&tx_frame.data[0]) = 0x0050002b;
+	*(uint32_t*)(&tx_frame.data[4]) = 0x00005a5a;
+	*(uint32_t*)(&rx_frame.data[0]) = 0x00500060;
+	*(uint32_t*)(&rx_frame.data[4]) = 0;
+//	memcpy(tx_frame.data, unlock_request,8);
+//	memcpy(rx_frame.data, unlock_response,8);
 
 	if(gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000101))
 	{
