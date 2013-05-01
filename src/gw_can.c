@@ -31,6 +31,10 @@
 
 #define CAN_REQUEST_ID	0x67D
 #define CAN_RESPONSE_ID	0x5FD
+#define CAN_BROADCAST_REQUEST	0x100
+#define CAN_CMD_SILENT	0x20
+#define CAN_CMD_BL		0x21
+
 #define CAN_GW_TIMEOUT 	(50*9000)	// 50 ms
 #define NODE_SECTOR_SIZE	(4*1024)
 #define NODE_SECTOR_NUM		8
@@ -40,15 +44,13 @@
 #define NODE_ERASE_TIMEOUT  (120*9000)	// 120 ms
 #define SYSTICK_TIMEOUT_100MS	900000
 
-const u8 bl_id_response[8]	= {0x43,0x00,0x10,0x00,'L','P','C','1'};
-const u8 bl_id_request[8] 	= {0x40,0x00,0x10,0x00,0x00,0x00,0x00,0x00};
-const u8 unlock_request[8] 	= {0x2b,0x00,0x50,0x00,0x5a,0x5a,0x00,0x00};
-const u8 unlock_response[8] = {0x60,0x00,0x50,0x00,0x00,0x00,0x00,0x00};
+//const u8 unlock_request[8] 	= {0x2b,0x00,0x50,0x00,0x5a,0x5a,0x00,0x00};
+//const u8 unlock_response[8] = {0x60,0x00,0x50,0x00,0x00,0x00,0x00,0x00};
 
 typedef struct {
 	u32 id;
 	u8 data[8];
-	u8 length;
+	u32 length;
 	volatile bool received;
 } can_msg_t;
 
@@ -56,22 +58,20 @@ can_msg_t * can_received_frame = NULL;
 
 static bool gw_can_sendrec(can_msg_t *tx_msg, can_msg_t *rx_msg_ref, u32 timeout,
 		bool check_id, bool check_len, u8 check_data_map);
-static bool gw_can_sendrec_w(can_msg_t *tx_msg, can_msg_t *rx_msg_ref, u32 timeout,
-		bool check_id, bool check_len, u8 check_data_map);
 bool gw_can_erase_sector(u32 address);
 void gw_can_init(uint32_t baud);
 bool gw_can_bl_request(uint16_t node);
 bool gw_can_flash_program(u32 address, u8* data, u16 len);
-extern void led_set(int id, int on);
 
 void gw_can_init(uint32_t baud)
 {
+	u32 brp;
+	/* disable IRQ is needed if we want to re-init during operation */
+	//nvic_disable_irq(NVIC_CAN2_RX0_IRQ);
+	can_disable_irq(CAN2,CAN_IER_FMPIE0);
 	/* Enable peripheral clocks. */
-	rcc_peripheral_enable_clock(&RCC_APB2ENR, RCC_APB2ENR_AFIOEN);
-	rcc_peripheral_enable_clock(&RCC_APB2ENR, RCC_APB2ENR_IOPBEN);
 	//TODO: these two above are possibly already enabled
-	rcc_peripheral_enable_clock(&RCC_APB1ENR, RCC_APB1ENR_CAN2EN);
-	rcc_peripheral_enable_clock(&RCC_APB1ENR, RCC_APB1ENR_CAN1EN);
+	rcc_peripheral_enable_clock(&RCC_APB1ENR, (RCC_APB1ENR_CAN2EN|RCC_APB1ENR_CAN1EN));
 	AFIO_MAPR &= ~AFIO_MAPR_CAN2_REMAP;	//PB12 PB13
 
 	/* Configure CAN pin: RX (input pull-up). */
@@ -85,8 +85,6 @@ void gw_can_init(uint32_t baud)
 
 	/* NVIC setup. */
 	can_reset(CAN2);
-
-	u32 brp;
 
 	switch (baud) {
 	case 100:
@@ -140,7 +138,44 @@ bool gw_can_bl_request(uint16_t node)
 {
 
 	can_msg_t tx_frame,rx_frame;
+	uint32_t ctr;
+	/* assuming the CAN has been initialized to 1Mbps */
 
+	tx_frame.id = CAN_BROADCAST_REQUEST;
+	tx_frame.length = 8;
+	tx_frame.data[0]= CAN_CMD_SILENT;
+	memset(&tx_frame.data[1],0,7);
+
+	/* transmit the request and wait for 50 ms to see if the node responds
+	 * We repeat this until we see that all nodes shut up
+	 */
+	for(ctr = 0; ctr < 5; ctr++) {
+		/* we send the SILENT request and wait for ANY frame that is received
+		 * gw_can_sendrec returns false in this setup only if there were
+		 * no response at all.
+		 */
+		if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,false,0)) {
+			break;
+		}
+	}
+	gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,false,0);
+	/* check if we have managed to send a SILENT request successfully */
+	if(ctr == 5) {
+		return false;
+	}
+	tx_frame.id = node & 0xff;
+	tx_frame.data[0]= CAN_CMD_BL;
+	rx_frame.id = 0x100 | (node &0xff);
+	rx_frame.length = 8;
+	rx_frame.data[0] = 0x21;
+	/* now we send out the BL request and expect ACK or timeout */
+
+	gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,true,true,0b00000001);
+
+	/* we change now to 100kbps that is the default baud rate of the
+	 * CANOPEN Boot loader in the LPC11C2x
+	 */
+	gw_can_init(100);
 	/*
 	 * Request from flash loader:
 	 * ID = 0x67D Len = 8 Data = 0x40 0x00 0x10 0x00 0x00 0x00 0x00 0x00
@@ -148,7 +183,8 @@ bool gw_can_bl_request(uint16_t node)
 	 */
 	tx_frame.id = CAN_REQUEST_ID;
 	tx_frame.length = 8;
-	memcpy(tx_frame.data, bl_id_request,8);
+	*(uint32_t*)(&tx_frame.data[0]) = 0x00100040;
+	*(uint32_t*)(&tx_frame.data[4]) = 0;
 
 	/* Expected response:
 	 * ID = 0x5FD Len = 8 Data = 0x43 0x00 0x10 0x00 0x4C 0x50 0x43 0x31
@@ -156,18 +192,25 @@ bool gw_can_bl_request(uint16_t node)
 	 */
 	//rx_frame.id = CAN_RESPONSE_ID;
 	rx_frame.length = 8;
-	memcpy(rx_frame.data, bl_id_response,8);
+	*(uint32_t*)(&rx_frame.data[0]) = 0x00100043;
+	*(uint32_t*)(&rx_frame.data[4]) = 0x3143504c;
 
-
-	if(!gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0xff))
+	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0xff))
 	{
 		return false;
 	}
 	/* unlock request */
-	memcpy(tx_frame.data, unlock_request,8);
-	memcpy(rx_frame.data, unlock_response,8);
+	/*const u8 unlock_request[8] 	= {0x2b,0x00,0x50,0x00,0x5a,0x5a,0x00,0x00};
+	const u8 unlock_response[8] = {0x60,0x00,0x50,0x00,0x00,0x00,0x00,0x00};
+	 *
+	 */
+	*(uint32_t*)(&tx_frame.data[0]) = 0x0050002b;
+	*(uint32_t*)(&tx_frame.data[4]) = 0x00005a5a;
 
-	if(gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000101))
+	*(uint32_t*)(&rx_frame.data[0]) = 0x00500060;
+	*(uint32_t*)(&rx_frame.data[4]) = 0;
+
+	if(gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000101))
 	{
 			/* unlock request ACKed */
 			return true;
@@ -182,29 +225,21 @@ bool gw_can_bl_request(uint16_t node)
 void can2_rx0_isr(void)
 {
 	/* check if there is any buffer configured */
-	if(can_received_frame != NULL) {
+	if(can_received_frame != NULL)
+	{
 		/* avoid overrun */
 		if(!can_received_frame->received)
 		{
-			bool ext,rtr;
+			bool tmp;
 			u32 fmi;
-			can_receive(CAN2, 0, true, &can_received_frame->id, &ext, &rtr, &fmi,
-						&can_received_frame->length, can_received_frame->data);
+			can_receive(CAN2, 0, true, &can_received_frame->id, &tmp, &tmp, &fmi,
+						(u8*)&can_received_frame->length,
+						can_received_frame->data);
 			can_received_frame->received = true;
 		}
 	}
 	nvic_clear_pending_irq(NVIC_CAN2_RX0_IRQ);
 
-}
-
-
-static bool gw_can_sendrec_w(can_msg_t *tx_msg, can_msg_t *rx_msg_ref, u32 timeout,
-		bool check_id, bool check_len, u8 check_data_map) {
-	bool retval;
-	led_set(1,1);
-	retval = gw_can_sendrec(tx_msg,rx_msg_ref,timeout,check_id,check_len,check_data_map);
-	led_set(1,0);
-	return retval;
 }
 
 static bool gw_can_sendrec(can_msg_t *tx_msg, can_msg_t *rx_msg_ref, u32 timeout,
@@ -269,9 +304,9 @@ bool gw_can_erase_sector(u32 address)
 {
 	can_msg_t tx_frame,rx_frame;
 	/* sectors are erased one by one */
-	u8 sector;
+	u32 sector;
 
-	/* sector size of NODE and STM32 is differnt:
+	/* sector size of NODE and STM32 is different:
 	 * STM32 is using 2kBytes while
 	 * LPC11C is using 4K sectors
 	 * Therefore we accept erase requests for the node
@@ -283,7 +318,7 @@ bool gw_can_erase_sector(u32 address)
 		//mimic successful erase
 		return true;
 	}
-	sector = (u8)(address/NODE_SECTOR_SIZE);
+	sector = (address/NODE_SECTOR_SIZE);
 	tx_frame.id = CAN_REQUEST_ID;
 	tx_frame.length = 8;
 	//rx_frame.id = CAN_RESPONSE_ID;
@@ -294,22 +329,16 @@ bool gw_can_erase_sector(u32 address)
 	 * 2. erase command
 	 */
 	/* flash prepare write command */
-	tx_frame.data[0] = 0x2b;
-	tx_frame.data[1] = 0x20;
-	tx_frame.data[2] = 0x50;
-	tx_frame.data[3] = 0x00;
+	*(uint32_t*)(&tx_frame.data[0]) = 0x0050202b;
 
-	tx_frame.data[4] = sector;
-	tx_frame.data[5] = sector;
-	tx_frame.data[6] = 0;
-	tx_frame.data[7] = 0;
+	tx_frame.data[4] = (u8)sector;
+	tx_frame.data[5] = (u8)sector;
+	*(uint16_t*)(&tx_frame.data[6]) = 0;
 
 	/* prepare expected response */
-	rx_frame.data[0] = 0x60;
-	rx_frame.data[1] = 0x20;
-	rx_frame.data[2] = 0x50;
+	*(uint32_t*)(&rx_frame.data[0]) = 0x00502060;
 
-	if(!gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
+	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
 	{
 			/* write preparation request not ACKed */
 			return false;
@@ -333,7 +362,7 @@ bool gw_can_erase_sector(u32 address)
 //	rx_frame.data[0] = 0x60;
 	rx_frame.data[1] = 0x30;
 //	rx_frame.data[2] = 0x50;
-	if(!gw_can_sendrec_w(&tx_frame,&rx_frame,NODE_ERASE_TIMEOUT,false,true,0b00000111))
+	if(!gw_can_sendrec(&tx_frame,&rx_frame,NODE_ERASE_TIMEOUT,false,true,0b00000111))
 	{
 			/* erase request not ACKed */
 			return false;
@@ -349,51 +378,36 @@ bool gw_can_flash_program(u32 address, u8* data, u16 len)
 	int data_ctr;
 	u16 len_save = len;
 	// calculate sector id (each sectors are 4Kbytes long
-	u8 sector = (u8)(address/NODE_SECTOR_SIZE);
+	u32 sector = (address/NODE_SECTOR_SIZE);
 	tx_frame.id = CAN_REQUEST_ID;
 	tx_frame.length = 8;
 	//rx_frame.id = CAN_RESPONSE_ID;
 	rx_frame.length = 8;
 
 	/* flash prepare write command */
-	tx_frame.data[0] = 0x2b;
-	tx_frame.data[1] = 0x20;
-	tx_frame.data[2] = 0x50;
-	tx_frame.data[3] = 0x00;
+	*(uint32_t*)(&tx_frame.data[0]) = 0x0050202b;
 
-	tx_frame.data[4] = sector;
-	tx_frame.data[5] = sector;
-	tx_frame.data[6] = 0;
-	tx_frame.data[7] = 0;
+	tx_frame.data[4] = (u8)sector;
+	tx_frame.data[5] = (u8)sector;
+	*(uint16_t*)(&tx_frame.data[6]) = 0;
 
 	/* expected response */
-	rx_frame.data[0] = 0x60;
-	rx_frame.data[1] = 0x20;
-	rx_frame.data[2] = 0x50;
+	*(uint32_t*)(&rx_frame.data[0]) = 0x00502060;
 
-	if(!gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
+	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
 	{
 			/* write preparation request not ACKed */
 			return false;
 	}
 
 	/* RAM write address command */
-	tx_frame.data[0] = 0x23;
-	tx_frame.data[1] = 0x15;
-	tx_frame.data[2] = 0x50;
-	tx_frame.data[3] = 0x00;
-
-	tx_frame.data[4] = (u8)NODE_RAM_START;
-	tx_frame.data[5] = (u8)(NODE_RAM_START>>8);
-	tx_frame.data[6] = (u8)(NODE_RAM_START>>16);
-	tx_frame.data[7] = (u8)(NODE_RAM_START>>24);
+	*(uint32_t*)(&tx_frame.data[0]) = 0x00501523;
+	*(uint32_t*)(&tx_frame.data[4]) = NODE_RAM_START;
 
 	/* expected response */
-	rx_frame.data[0] = 0x60;
-	rx_frame.data[1] = 0x15;
-	rx_frame.data[2] = 0x50;
+	*(uint32_t*)(&rx_frame.data[0]) = 0x00501560;
 
-	if(!gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
+	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
 	{
 			/* RAM write address request not ACKed */
 			return false;
@@ -401,26 +415,20 @@ bool gw_can_flash_program(u32 address, u8* data, u16 len)
 
 
 //	 Segmented download command
-	tx_frame.data[0] = 0x21;
-	tx_frame.data[1] = 0x50;
-	tx_frame.data[2] = 0x1f;
-	tx_frame.data[3] = 0x01;
+	*(uint32_t*)(&tx_frame.data[0]) = 0x011f5021;
 
-	tx_frame.data[4] = (u8)len;
-	tx_frame.data[5] = (u8)(len>>8);
-	tx_frame.data[6] = 0;
-	tx_frame.data[7] = 0;
+	*(uint16_t*)(&tx_frame.data[4]) = len;
+	*(uint16_t*)(&tx_frame.data[6]) = 0;
 
 	 //expected response
-	rx_frame.data[0] = 0x60;
-	rx_frame.data[1] = 0x50;
-	rx_frame.data[2] = 0x1f;
+	*(uint32_t*)(&rx_frame.data[0]) = 0x001f5060;
 
-	if(!gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
+	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
 	{
 		//segmented write first frame not acked
 			return false;
 	}
+
 	/* segmented ack is one byte long */
 	rx_frame.length = 1;
 	while(len > 7)
@@ -432,7 +440,7 @@ bool gw_can_flash_program(u32 address, u8* data, u16 len)
 		 //expected response
 		rx_frame.data[0] = 0x20 | toggle;
 
-		if(!gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000001))
+		if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000001))
 		{
 		//		 RAM write address request not ACKed
 				return false;
@@ -447,7 +455,7 @@ bool gw_can_flash_program(u32 address, u8* data, u16 len)
 	 //expected response
 	rx_frame.data[0] = 0x20 | toggle;
 
-	if(!gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000001))
+	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000001))
 	{
 	//		 RAM write address request not ACKed
 			return false;
@@ -456,23 +464,14 @@ bool gw_can_flash_program(u32 address, u8* data, u16 len)
 	/* Initiate programming bytes to flash */
 
 	/* Flash Address (DST) */
-	tx_frame.data[0] = 0x23;
-	tx_frame.data[1] = 0x50;
-	tx_frame.data[2] = 0x50;
-	tx_frame.data[3] = 0x01;
-
-	tx_frame.data[4] = (u8)address;
-	tx_frame.data[5] = (u8)(address>>8);
-	tx_frame.data[6] = (u8)(address>>16);
-	tx_frame.data[7] = (u8)(address>>24);
+	*(uint32_t*)(&tx_frame.data[0]) = 0x01505023;
+	*(uint32_t*)(&tx_frame.data[4]) = address;
 
 	/* expected response */
-	rx_frame.data[0] = 0x60;
-	rx_frame.data[1] = 0x50;
-	rx_frame.data[2] = 0x50;
+	*(uint32_t*)(&rx_frame.data[0]) = 0x00505060;
 	rx_frame.length = 8;
 
-	if(!gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
+	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
 	{
 			/* Flash address request not ACKed */
 			return false;
@@ -484,11 +483,7 @@ bool gw_can_flash_program(u32 address, u8* data, u16 len)
 //	tx_frame.data[1] = 0x50;
 //	tx_frame.data[2] = 0x50;
 	tx_frame.data[3] = 0x02;
-
-	tx_frame.data[4] = (u8)NODE_RAM_START;
-	tx_frame.data[5] = (u8)(NODE_RAM_START>>8);
-	tx_frame.data[6] = (u8)(NODE_RAM_START>>16);
-	tx_frame.data[7] = (u8)(NODE_RAM_START>>24);
+	*(uint32_t *)(&tx_frame.data[4]) = NODE_RAM_START;
 
 	/* expected response */
 //	rx_frame.data[0] = 0x60;
@@ -496,36 +491,26 @@ bool gw_can_flash_program(u32 address, u8* data, u16 len)
 //	rx_frame.data[2] = 0x50;
 //	rx_frame.length = 8;
 
-	if(!gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
+	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
 	{
 			/* RAM  address request not ACKed */
 			return false;
 	}
 
 	/* length and initiate programming */
-	tx_frame.data[0] = 0x2b;
-	tx_frame.data[1] = 0x50;
-	tx_frame.data[2] = 0x50;
-	tx_frame.data[3] = 0x03;
-
-	tx_frame.data[4] = (u8)len_save;
-	tx_frame.data[5] = (u8)(len_save>>8);
-	tx_frame.data[6] = 0;
-	tx_frame.data[7] = 0;
+	*(uint32_t*)(&tx_frame.data[0])= 0x0350502b;
+	*(uint16_t*)(&tx_frame.data[4]) = len_save;
+	*(uint16_t*)(&tx_frame.data[6]) = 0;
 
 	/* expected response */
-	rx_frame.data[0] = 0x60;
-	rx_frame.data[1] = 0x50;
-	rx_frame.data[2] = 0x50;
+	*(uint32_t*)(&rx_frame.data[0]) = 0x00505060;
 	rx_frame.length = 8;
 
-	if(!gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
+	if(!gw_can_sendrec(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000111))
 	{
 			/* size address request not ACKed */
 			return false;
 	}
 
-
 	return true;
 }
-

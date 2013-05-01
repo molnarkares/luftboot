@@ -185,17 +185,19 @@ static u8 usbdfu_getstatus(u32 *bwPollTimeout)
 	case STATE_DFU_DNLOAD_SYNC:
 		usbdfu_state = STATE_DFU_DNBUSY;
 		*bwPollTimeout = 100;
-		return DFU_STATUS_OK;
+		break;
 
 	case STATE_DFU_MANIFEST_SYNC:
 		/* Device will reset when read is complete */
 		usbdfu_state = STATE_DFU_MANIFEST;
-		return DFU_STATUS_OK;
+		break;
 
 	default:
-		return DFU_STATUS_OK;
+		break;
 	}
+	return DFU_STATUS_OK;
 }
+
 static void usbdfu_getstatus_complete(usbd_device *device, struct usb_setup_data *req)
 {
 	int i;
@@ -213,13 +215,13 @@ static void usbdfu_getstatus_complete(usbd_device *device, struct usb_setup_data
 				if(!gw_can_bl_request(node))
 				{
 					usbd_ep_stall_set(device, 0, 1);
-					return;
+					break;
 				}
 			}else if (bl_address >= APP_END_ADDRESS)
 			{
 				// out of range
 				usbd_ep_stall_set(device, 0, 1);
-				return;
+				break;
 			}
 			switch(prog.buf[0]) {
 			case CMD_ERASE:
@@ -235,8 +237,10 @@ static void usbdfu_getstatus_complete(usbd_device *device, struct usb_setup_data
 					flash_erase_page(bl_address);
 					flash_lock();
 				}
+				break;
 			case CMD_SETADDR:
 				prog.addr = bl_address;
+				break;
 			}
 		} else
 		{
@@ -264,13 +268,13 @@ static void usbdfu_getstatus_complete(usbd_device *device, struct usb_setup_data
 		 * skipping dfuDNLOAD-SYNC
 	*/
 		usbdfu_state = STATE_DFU_DNLOAD_IDLE;
-		return;
+		break;
 	case STATE_DFU_MANIFEST:
 			 //USB device must detach, we just reset...
 		scb_reset_system();
-		return;  //Will never return
+		break;  //Will never return
 	default:
-		return;
+		break;
 	}
 }
 
@@ -322,7 +326,7 @@ static int usbdfu_control_request(usbd_device *device, struct usb_setup_data *re
 		return 1;
 		}
 	case DFU_GETSTATE:
-		/* Return state with no state transision */
+		/* Return state with no state transition*/
 		*buf[0] = usbdfu_state;
 		*len = 1;
 		return 1;
@@ -429,7 +433,7 @@ int main(void)
 	}
 
 	rcc_clock_setup_in_hse_8mhz_out_72mhz();
-	gw_can_init(100);
+	gw_can_init(1000);
 
 	systick_set_clocksource(STK_CTRL_CLKSOURCE_AHB_DIV8);
 	systick_set_reload(SYSTICK_TIMEOUT_100MS);
@@ -466,10 +470,11 @@ static char *get_dev_unique_id(char *s)
 		s[i+8] = ((*unique_id >> 4) & 0xF) + '0';
 		s[i+8+1] = (*unique_id++ & 0xF) + '0';
 	}
-	for(i = 0; i < 24; i++)
-		if(s[i+8] > '9')
+	for(i = 0; i < 24; i++) {
+		if(s[i+8] > '9') {
 			s[i+8] += 'A' - '9' - 1;
-
+		}
+	}
 	return s;
 }
 
@@ -477,4 +482,3 @@ void sys_tick_handler()
 {
 	led_advance();
 }
-
