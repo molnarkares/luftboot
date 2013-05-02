@@ -84,7 +84,6 @@ static int usbdfu_control_request(usbd_device *device, struct usb_setup_data *re
 #define SYSTICK_TIMEOUT_100MS	900000
 
 extern bool gw_can_erase_sector(u32 address);
-extern void gw_can_init(uint32_t baud);
 extern bool gw_can_bl_request(uint16_t node);
 extern bool gw_can_flash_program(u32 address, u8* data, u16 len);
 
@@ -434,8 +433,6 @@ int main(void)
 	}
 
 	rcc_clock_setup_in_hse_8mhz_out_72mhz();
-	gw_can_init(100);
-
 	systick_set_clocksource(STK_CTRL_CLKSOURCE_AHB_DIV8);
 	systick_set_reload(SYSTICK_TIMEOUT_100MS);
 	systick_interrupt_enable();

@@ -31,7 +31,11 @@
 
 #define CAN_REQUEST_ID	0x67D
 #define CAN_RESPONSE_ID	0x5FD
+#define CAN_BL_BROADCAST_ID	0x1
+#define CAN_BL_RESPONSE_ID	0x2
+#define CAN_BRD_TIMEOUT	(10*9000)	// 10 ms
 #define CAN_GW_TIMEOUT 	(50*9000)	// 50 ms
+
 #define NODE_SECTOR_SIZE	(4*1024)
 #define NODE_SECTOR_NUM		8
 #define NODE_FLASH_START	(0x00000000)
@@ -55,7 +59,7 @@ static bool gw_can_sendrec(can_msg_t *tx_msg, can_msg_t *rx_msg_ref, uint32_t ti
 static bool gw_can_sendrec_w(can_msg_t *tx_msg, can_msg_t *rx_msg_ref, uint32_t timeout,
 		bool check_id, bool check_len, uint8_t check_data_map);
 bool gw_can_erase_sector(uint32_t address);
-void gw_can_init(uint32_t baud);
+static void gw_can_init(uint32_t baud);
 bool gw_can_bl_request(uint16_t node);
 bool gw_can_flash_program(uint32_t address, uint8_t* data, uint16_t len);
 extern void led_set(int id, int on);
@@ -130,16 +134,48 @@ void gw_can_init(uint32_t baud)
 
 bool gw_can_bl_request(uint16_t node)
 {
-
 	can_msg_t tx_frame,rx_frame;
 
+	/* start on 1Mbps and send commands not the actove nodes */
+	gw_can_init(1000);
+
+	/* send PREPARE BL command to all nodes. This shall put all nodes to silent/
+	 * listen only except the one that is targeted.
+	 */
+	tx_frame.id = CAN_BL_BROADCAST_ID;
+	tx_frame.length = 8;
+	*(uint32_t*)&tx_frame.data[0]= 0x00000020;
+	*(uint16_t*)&tx_frame.data[4]= node;
+	*(uint16_t*)&tx_frame.data[6]= 100;
+
+	rx_frame.id = CAN_BL_RESPONSE_ID;
+	rx_frame.length = 8;
+	*(uint32_t*)&tx_frame.data[0]= 0x00000021;
+	*(uint16_t*)&tx_frame.data[4]= node;
+	*(uint16_t*)&tx_frame.data[6]= 100;
+
+	if(gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,true,true,0xff)) {
+		uint32_t timeout_val,now;
+		/* wait for 10ms to enable time for all nodes to make the transition to 100kbps*/
+		timeout_val = systick_get_value();
+		do
+		{
+			now =systick_get_value();
+			if( now > timeout_val)
+			{
+				timeout_val += SYSTICK_TIMEOUT_100MS;
+			}
+		}while((timeout_val - now) > CAN_BRD_TIMEOUT);
+	}
+
+	/* change to 100kbps and talk to the LPCx CANOPEN Boot Loader */
+	gw_can_init(100);
 	/*
 	 * Request from flash loader:
 	 * ID = 0x67D Len = 8 Data = 0x40 0x00 0x10 0x00 0x00 0x00 0x00 0x00
 	 *
 	 */
 	tx_frame.id = CAN_REQUEST_ID;
-	tx_frame.length = 8;
 	*(uint32_t*)(&tx_frame.data[0]) = 0x00100040;
 	*(uint32_t*)(&tx_frame.data[4]) = 0;
 
@@ -148,7 +184,6 @@ bool gw_can_bl_request(uint16_t node)
 	 *
 	 */
 	//rx_frame.id = CAN_RESPONSE_ID;
-	rx_frame.length = 8;
 	*(uint32_t*)(&rx_frame.data[0]) = 0x00100043;
 	*(uint32_t*)(&rx_frame.data[4]) = 0x3143504c;
 
