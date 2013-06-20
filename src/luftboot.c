@@ -18,6 +18,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <stdint.h>
 #include <string.h>
 #include <libopencm3/cm3/systick.h>
 #include <libopencm3/stm32/f1/rcc.h>
@@ -56,15 +57,18 @@
 
 #define FLASH_OBP_RDP 0x1FFFF800
 #define FLASH_OBP_WRP10 0x1FFFF808
-/* Defines user option register as per Table 5 on Page 55 of RM0008 (STM32 Reference Manual) */
+/* Defines user option register as per Table 5 on Page 55 of RM0008 (STM32
+ * Reference Manual)
+ */
 #define FLASH_OBP_DATA0 0x1FFFF804
 
 #define FLASH_OBP_RDP_KEY 0x5aa5
 
-static const char dev_serial[] __attribute__ ((section (".devserial"))) = DEV_SERIAL;
+static const char 
+dev_serial[] __attribute__((section (".devserial"))) = DEV_SERIAL;
 
 /* We need a special large control buffer for this device: */
-u8 usbd_control_buffer[SECTOR_SIZE];
+uint8_t usbd_control_buffer[SECTOR_SIZE];
 
 static enum dfu_state usbdfu_state = STATE_DFU_IDLE;
 
@@ -89,10 +93,10 @@ extern bool gw_can_flash_program(u32 address, u8* data, u16 len);
 
 
 static struct {
-	u8 buf[sizeof(usbd_control_buffer)];
-	u16 len;
-	u32 addr;
-	u16 blocknum;
+	uint8_t buf[sizeof(usbd_control_buffer)];
+	uint16_t len;
+	uint32_t addr;
+	uint16_t blocknum;
 } prog;
 
 typedef struct {
@@ -178,7 +182,7 @@ static const char *usb_strings[] = {
 	"@Internal Flash   /0x08000000/4*002Ka,124*002Kg"
 };
 
-static u8 usbdfu_getstatus(u32 *bwPollTimeout)
+static uint8_t usbdfu_getstatus(uint32_t *bwPollTimeout)
 {
 	switch(usbdfu_state) {
 	case STATE_DFU_DNLOAD_SYNC:
@@ -198,7 +202,8 @@ static u8 usbdfu_getstatus(u32 *bwPollTimeout)
 
 }
 
-static void usbdfu_getstatus_complete(usbd_device *device, struct usb_setup_data *req)
+static void usbdfu_getstatus_complete(usbd_device *device,
+				      struct usb_setup_data *req)
 {
 	int i;
 	(void)req;
@@ -278,8 +283,11 @@ static void usbdfu_getstatus_complete(usbd_device *device, struct usb_setup_data
 	}
 }
 
-static int usbdfu_control_request(usbd_device *device, struct usb_setup_data *req, u8 **buf,
-		u16 *len, void (**complete)(usbd_device *device, struct usb_setup_data *req))
+static int usbdfu_control_request(usbd_device *device,
+				  struct usb_setup_data *req, uint8_t **buf,
+				  uint16_t *len,
+				  void (**complete)(usbd_device *device,
+						struct usb_setup_data *req))
 {
 
 	if((req->bmRequestType & 0x7F) != 0x21)
@@ -311,7 +319,8 @@ static int usbdfu_control_request(usbd_device *device, struct usb_setup_data *re
 		/* Upload not supported for now */
 		return 0;
 	case DFU_GETSTATUS: {
-		u32 bwPollTimeout = 0; /* 24-bit integer in DFU class spec */
+		uint32_t bwPollTimeout = 0; /* 24-bit integer in DFU class spec
+					     */
 
 		(*buf)[0] = usbdfu_getstatus(&bwPollTimeout);
 		(*buf)[1] = bwPollTimeout & 0xFF;
@@ -440,9 +449,9 @@ int main(void)
 
 	get_dev_unique_id(serial_no);
 
-	usbd_device *device = usbd_init(&stm32f107_usb_driver, &dev, &config, usb_strings,5,usbd_control_buffer,SECTOR_SIZE);
-
-/*	usbd_set_control_buffer_size(device, sizeof(usbd_control_buffer)); */
+	usbd_device *device = usbd_init(&stm32f107_usb_driver, &dev, &config,
+					usb_strings, 4, usbd_control_buffer,
+					sizeof(usbd_control_buffer));
 	usbd_register_control_callback( device,
 				USB_REQ_TYPE_CLASS | USB_REQ_TYPE_INTERFACE,
 				USB_REQ_TYPE_TYPE | USB_REQ_TYPE_RECIPIENT,

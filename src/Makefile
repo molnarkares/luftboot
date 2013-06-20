@@ -21,17 +21,24 @@ DEV_SERIAL = NSERIAL
 # Check if we are using gcc-arm-embedded compiler
 # if so use nano.specs to save space
 ifeq ($(shell $(CC) -specs=nano.specs 2>&1 | grep nano.specs),)
+ifeq ($(V),1)
 $(info Using gcc-arm-embedded, nano specs enabled!!!)
+endif
 SPECS = -specs=nano.specs
 else
+ifeq ($(V),1)
 $(info Not using gcc-arm-embedded, nano specs disabled!!!)
 endif
+endif
 
-CFLAGS += -Os -g3 -I$(LIBOPENCM3)/include -Istm32/include -mcpu=cortex-m3 -mthumb -msoft-float -DSTM32F1 --function-sections --data-sections -DVERSION="\"$(VERSION)\"" -DDEV_SERIAL="\"$(DEV_SERIAL)\""
-LDFLAGS_BOOT = -L $(LIBOPENCM3)/lib -lopencm3_stm32f1 -Wl,--defsym,_stack=0x20005000 \
+CFLAGS += -Os -g3 -Istm32/include -mcpu=cortex-m3 -mthumb -msoft-float -DSTM32F1 \
+	-I$(LIBOPENCM3)/include --function-sections --data-sections \
+	-DVERSION="\"$(VERSION)\"" -DDEV_SERIAL="\"$(DEV_SERIAL)\""
+LDFLAGS_BOOT = -lopencm3_stm32f1 -Wl,--defsym,_stack=0x20005000 \
 	-Wl,-T,luftboot.ld $(SPECS) -nostartfiles -lc -lnosys -Wl,-Map=mapfile \
-	-mthumb -mcpu=cortex-m3 -mfix-cortex-m3-ldrd -msoft-float -Wl,--gc-sections
-LDFLAGS_BOOT += -Wl,--section-start=.devserial=0x8001FF8
+	-mthumb -mcpu=cortex-m3 -mfix-cortex-m3-ldrd -msoft-float -L$(LIBOPENCM3)/lib \
+	-Wl,--gc-sections
+LDFLAGS_BOOT += -Wl,--section-start=.devserial=0x8001FF0
 LDFLAGS = $(LDFLAGS_BOOT) -Wl,-Ttext=0x8002000
 
 ifneq ($(V),1)
@@ -51,13 +58,20 @@ luftboot.elf: luftboot.o gw_can.o $(LIBOPENCM3)/lib/libopencm3_stm32f1.a
 	$(CC) $^ -o $@ $(LDFLAGS_BOOT)
 
 luftboot.bin: luftboot.elf
-	$(OBJCOPY) -O binary $^ $@
+	@echo "  create  luftboot.bin"
+	$(Q)$(Q)$(OBJCOPY) -O binary $^ $@
 
 luftboot.hex: luftboot.elf
-	$(OBJCOPY) -O ihex $^ $@
+	@echo "  create  luftboot.hex"
+	$(Q)$(OBJCOPY) -O ihex $^ $@
+
+%.o: %.c
+	@printf "  CC      $(<F)\n"
+	$(Q)$(CC) $(CFLAGS) -o $@ -c $<
 
 clean:
-	-rm -rf *.o luftboot.elf luftboot.bin luftboot.hex mapfile
+	@echo "  CLEAN   luftboot"
+	$(Q)-rm -rf luftboot.o luftboot.elf luftboot.bin luftboot.hex mapfile
 
 ifeq ($(BMP_PORT),)
 flash: luftboot.hex
