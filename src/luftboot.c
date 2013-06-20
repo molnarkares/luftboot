@@ -79,17 +79,17 @@ static void led_advance(void);
 void led_set(int id, int on);
 
 static char *get_dev_unique_id(char *serial_no);
-static u8 usbdfu_getstatus(u32 *bwPollTimeout);
+static uint8_t usbdfu_getstatus(uint32_t *bwPollTimeout);
 static void usbdfu_getstatus_complete(usbd_device *device, struct usb_setup_data *req);
-static int usbdfu_control_request(usbd_device *device, struct usb_setup_data *req, u8 **buf,
-		u16 *len, void (**complete)(usbd_device *device, struct usb_setup_data *req));
+static int usbdfu_control_request(usbd_device *device, struct usb_setup_data *req, uint8_t **buf,
+		uint16_t *len, void (**complete)(usbd_device *device, struct usb_setup_data *req));
 
 
 #define SYSTICK_TIMEOUT_100MS	900000
 
-extern bool gw_can_erase_sector(u32 address);
+extern bool gw_can_erase_sector(uint32_t address);
 extern bool gw_can_bl_request(uint16_t node);
-extern bool gw_can_flash_program(u32 address, u8* data, u16 len);
+extern bool gw_can_flash_program(uint32_t address, uint8_t* data, uint16_t len);
 
 
 static struct {
@@ -100,8 +100,8 @@ static struct {
 } prog;
 
 typedef struct {
-	u32 gpioport;
-	u16 gpios;
+	uint32_t gpioport;
+	uint16_t gpios;
 }gpio_config_t;
 
 gpio_config_t io_cfg[] = {
@@ -212,10 +212,10 @@ static void usbdfu_getstatus_complete(usbd_device *device,
 	case STATE_DFU_DNBUSY:
 		if(prog.blocknum == 0)
 		{
-			u32 bl_address = *(u32*)(prog.buf+1);
+			uint32_t bl_address = *(uint32_t*)(prog.buf+1);
 			if (bl_address < APP_ADDRESS)
 			{
-				u16 node = (u16)(bl_address>>16);
+				uint16_t node = (uint16_t)(bl_address>>16);
 				// we will gateway to CAN nodes
 				if(!gw_can_bl_request(node))
 				{
@@ -249,7 +249,7 @@ static void usbdfu_getstatus_complete(usbd_device *device,
 			}
 		} else
 		{
-			u32 baseaddr = prog.addr + ((prog.blocknum - 2) *
+			uint32_t baseaddr = prog.addr + ((prog.blocknum - 2) *
 					dfu_function.wTransferSize);
 			if(baseaddr >= APP_ADDRESS) // program stm32
 			{
@@ -257,7 +257,7 @@ static void usbdfu_getstatus_complete(usbd_device *device,
 				for(i = 0; i < prog.len; i += 2)
 				{
 					flash_program_half_word(baseaddr + i,
-										*(u16*)(prog.buf+i));
+										*(uint16_t*)(prog.buf+i));
 				}
 				flash_lock();
 			}else // gateway
@@ -428,7 +428,7 @@ int main(void)
 	gpio_init();
 
 	/* Check if the application is valid. */
-	if ((*(volatile u32 *)APP_ADDRESS & 0x2FFE0000) == 0x20000000)
+	if ((*(volatile uint32_t *)APP_ADDRESS & 0x2FFE0000) == 0x20000000)
 	{
 		if(!gpio_force_bootloader())
 		{
