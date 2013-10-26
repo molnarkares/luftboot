@@ -24,6 +24,7 @@
 #include <libopencm3/stm32/f1/rcc.h>
 #include <libopencm3/stm32/f1/gpio.h>
 #include <libopencm3/stm32/f1/flash.h>
+#include <libopencm3/stm32/crc.h>
 #include <libopencm3/cm3/scb.h>
 #include <libopencm3/usb/usbd.h>
 #include <libopencm3/usb/dfu.h>
@@ -56,14 +57,17 @@ static const char
 dev_serial[] __attribute__((section (".devserial"))) = DEV_SERIAL;
 
 /* We need a special large control buffer for this device: */
-uint8_t usbd_control_buffer[SECTOR_SIZE];
+uint8_t usbd_control_buffer[SECTOR_SIZE] __attribute__ ((aligned (4)));
 
 static enum dfu_state usbdfu_state = STATE_DFU_IDLE;
 
 inline char *get_dev_unique_id(char *serial_no);
 
 static struct {
-	uint8_t buf[sizeof(usbd_control_buffer)];
+	union{
+		uint8_t  buf8[sizeof(usbd_control_buffer)];
+		uint32_t buf32[sizeof(usbd_control_buffer)/sizeof(uint32_t)];
+	}u;
 	uint16_t len;
 	uint32_t addr;
 	uint16_t blocknum;
@@ -132,6 +136,7 @@ const struct usb_config_descriptor config = {
 };
 
 static char serial_no[24+8];
+static uint32_t crc_ram,crc_flash;
 
 static const char *usb_strings[] = {
 	"Transition Robotics Inc.",
@@ -170,24 +175,30 @@ static void usbdfu_getstatus_complete(usbd_device *device,
 
 		flash_unlock();
 		if(prog.blocknum == 0) {
-			if ((*(uint32_t*)(prog.buf+1) < 0x8002000) ||
-			    (*(uint32_t*)(prog.buf+1) >= 0x8040000)) {
+			uint32_t address = *(uint32_t*)(prog.u.buf8+1);
+			if ((address < 0x8002000) ||
+			    (address >= 0x8040000) ||
+			    (prog.len % 4)) {
 				usbd_ep_stall_set(device, 0, 1);
 				return;
 			}
-			switch(prog.buf[0]) {
+			switch(prog.u.buf8[0]) {
 			case CMD_ERASE:
-				flash_erase_page(*(uint32_t*)(prog.buf+1));
+				flash_erase_page(address);
+				break;
 			case CMD_SETADDR:
-				prog.addr = *(uint32_t*)(prog.buf+1);
+				prog.addr = address;
+				crc_reset();
+				break;
 			}
 		} else {
 			uint32_t baseaddr = prog.addr +
 				((prog.blocknum - 2) *
 					dfu_function.wTransferSize);
-			for(i = 0; i < prog.len; i += 2)
-				flash_program_half_word(baseaddr + i,
-						*(uint16_t*)(prog.buf+i));
+			for(i = 0; i < prog.len/4; i++) {
+				crc_ram = crc_calculate(prog.u.buf32[i]);
+				flash_program_word(baseaddr + (i<<2),prog.u.buf32[i]);
+			}
 		}
 		flash_lock();
 
@@ -198,8 +209,10 @@ static void usbdfu_getstatus_complete(usbd_device *device,
 		return;
 
 	case STATE_DFU_MANIFEST:
+		crc_reset();
+		crc_flash = crc_calculate_block((uint32_t*)prog.addr,prog.len/4);
 		/* Mark DATA0 register that we have just downloaded the code */
-		if((FLASH_OBR & 0x3FC00) != 0x00) {
+		if((crc_ram == crc_flash) && (FLASH_OBR & 0x3FC00) != 0x00)  {
 		  flash_unlock();
 		  FLASH_CR = 0;
 		  flash_erase_option_bytes();
@@ -235,7 +248,7 @@ static int usbdfu_control_request(usbd_device *device,
 			/* Copy download data for use on GET_STATUS */
 			prog.blocknum = req->wValue;
 			prog.len = *len;
-			memcpy(prog.buf, *buf, *len);
+			memcpy(prog.u.buf32, (uint32_t*)*buf, (*len)/sizeof(uint32_t));
 			usbdfu_state = STATE_DFU_DNLOAD_SYNC;
 			return 1;
 		}
