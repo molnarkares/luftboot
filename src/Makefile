@@ -71,7 +71,7 @@ luftboot.hex: luftboot.elf
 
 clean:
 	@echo "  CLEAN   luftboot"
-	$(Q)-rm -rf luftboot.o luftboot.elf luftboot.bin luftboot.hex mapfile
+	$(Q)-rm -rf luftboot.o gw_can.o luftboot.elf luftboot.bin luftboot.hex mapfile
 
 ifeq ($(BMP_PORT),)
 flash: luftboot.hex

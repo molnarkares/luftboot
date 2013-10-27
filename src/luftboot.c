@@ -29,6 +29,7 @@
 #include <libopencm3/usb/dfu.h>
 #include <libopencm3/stm32/can.h>
 #include <libopencm3/cm3/nvic.h>
+#include <libopencm3/stm32/crc.h>
 
 #define LED1_PORT		GPIOA
 #define LED1_PIN		GPIO10
@@ -228,24 +229,25 @@ static void usbdfu_getstatus_complete(usbd_device *device,
 				usbd_ep_stall_set(device, 0, 1);
 				return;
 			}
+			prog.addr = bl_address;
 			switch(prog.buf[0]) {
-			case CMD_ERASE:
-				if (bl_address < APP_ADDRESS)
-				{
-					if(!gw_can_erase_sector(bl_address))
+				case CMD_ERASE:
+					if (bl_address < APP_ADDRESS)
 					{
-						usbd_ep_stall_set(device, 0, 1);
+						if(!gw_can_erase_sector(bl_address))
+						{
+							usbd_ep_stall_set(device, 0, 1);
+						}
+					}else
+					{
+						flash_unlock();
+						flash_erase_page(bl_address);
+						flash_lock();
 					}
-				}else
-				{
-					flash_unlock();
-					flash_erase_page(bl_address);
-					flash_lock();
-				}
-				break;
-			case CMD_SETADDR:
-				prog.addr = bl_address;
-				break;
+					break;
+/*				case CMD_SETADDR:
+					prog.addr = bl_address;
+					break; */
 			}
 		} else
 		{
