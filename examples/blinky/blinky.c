@@ -36,22 +36,12 @@ void clock_setup(void)
 void gpio_setup(void)
 {
 	/* Set GPIO12 (in GPIO port C) to 'output push-pull'. */
-	gpio_set_mode(GPIOA, GPIO_MODE_OUTPUT_50_MHZ,
-		      GPIO_CNF_OUTPUT_PUSHPULL, GPIO8);
-	gpio_set_mode(GPIOB, GPIO_MODE_OUTPUT_50_MHZ,
-		      GPIO_CNF_OUTPUT_PUSHPULL, GPIO4);
 	gpio_set_mode(GPIOC, GPIO_MODE_OUTPUT_50_MHZ,
 		      GPIO_CNF_OUTPUT_PUSHPULL, GPIO15);
-	gpio_set_mode(GPIOC, GPIO_MODE_OUTPUT_50_MHZ,
-		      GPIO_CNF_OUTPUT_PUSHPULL, GPIO2);
-	gpio_set_mode(GPIOC, GPIO_MODE_OUTPUT_50_MHZ,
-		      GPIO_CNF_OUTPUT_PUSHPULL, GPIO5);
 
 	AFIO_MAPR |= AFIO_MAPR_SWJ_CFG_FULL_SWJ_NO_JNTRST;
 
 	/* preconfigure the led's */
-	gpio_clear(GPIOA, GPIO8); /* switch on led */
-	gpio_set(GPIOB, GPIO4); /* switch off led */
 	gpio_clear(GPIOC, GPIO15); /* switch on led */
 }
 
@@ -70,21 +60,12 @@ int main(void)
 	for (counter=0; counter < 2; counter++) {
 		for (i = 0; i < 800000; i++)	/* Wait a bit. */
 			__asm__("nop");
-
-		gpio_clear(GPIOA, GPIO8);	/* LED on/off */
-		gpio_clear(GPIOB, GPIO4);	/* LED on/off */
 		gpio_clear(GPIOC, GPIO15);	/* LED on/off */
-		gpio_clear(GPIOC, GPIO2);	/* LED on/off */
-		gpio_clear(GPIOC, GPIO5);	/* LED on/off */
 
 		for (i = 0; i < 800000; i++)	/* Wait a bit. */
 			__asm__("nop");
 
-		gpio_set(GPIOA, GPIO8);	        /* LED on/off */
-		gpio_set(GPIOB, GPIO4);	        /* LED on/off */
 		gpio_set(GPIOC, GPIO15);        /* LED on/off */
-		gpio_set(GPIOC, GPIO2);	        /* LED on/off */
-		gpio_set(GPIOC, GPIO5);         /* LED on/off */
 	}
 
 	counter = 0;
@@ -93,17 +74,7 @@ int main(void)
 	while (1) {
 
 		counter++;
-		if (counter & (1 << 0)) {
-			gpio_clear(GPIOA, GPIO8);	/* LED on/off */
-		} else {
-			gpio_set(GPIOA, GPIO8);	        /* LED on/off */
-		}
 
-		if (counter & (1 << 1)) {
-			gpio_clear(GPIOB, GPIO4);	/* LED on/off */
-		} else {
-			gpio_set(GPIOB, GPIO4);	        /* LED on/off */
-		}
 
 		if (counter & (1 << 2)) {
 			gpio_clear(GPIOC, GPIO15);	/* LED on/off */
@@ -111,33 +82,9 @@ int main(void)
 			gpio_set(GPIOC, GPIO15);	/* LED on/off */
 		}
 
-		if (counter & (1 << 3)) {
-			gpio_clear(GPIOC, GPIO2);	/* LED on/off */
-		} else {
-			gpio_set(GPIOC, GPIO2);	        /* LED on/off */
-		}
-
-		if (counter & (1 << 4)) {
-			gpio_clear(GPIOC, GPIO5);	/* LED on/off */
-		} else {
-			gpio_set(GPIOC, GPIO5);	        /* LED on/off */
-		}
-
 		for (i = 0; i < 800000; i++)	/* Wait a bit. */
 			__asm__("nop");
 
-		if (counter == 32) {
-			/*
-			 * Set the bootloader force pin to be input pull-down and low.
-			 * After the cortex core reset this setting is being carried
-			 * over to the bootloader indicating that we want to stay in
-			 * the bootloader.
-			 */
-			gpio_clear(GPIOC, GPIO0);
-			gpio_set_mode(GPIOC, GPIO_MODE_INPUT,
-				      GPIO_CNF_INPUT_PULL_UPDOWN, GPIO0);
-			scb_reset_core(); /* reset the cortex core */
-		}
 	}
 
 
