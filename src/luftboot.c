@@ -24,11 +24,10 @@
 #include <libopencm3/stm32/f1/rcc.h>
 #include <libopencm3/stm32/f1/gpio.h>
 #include <libopencm3/stm32/f1/flash.h>
-#include <libopencm3/stm32/crc.h>
 #include <libopencm3/cm3/scb.h>
 #include <libopencm3/usb/usbd.h>
 #include <libopencm3/usb/dfu.h>
-#include "crc32_zip.h"
+#include <crc32_zip.h>
 
 #ifndef VERSION
 #define VERSION         ""
@@ -143,7 +142,6 @@ const struct usb_config_descriptor config = {
 };
 
 static char serial_no[24+8];
-static uint32_t crc_ram,crc_flash;
 
 static const char *usb_strings[] = {
 	"Transition Robotics Inc.",
@@ -274,10 +272,8 @@ static void usbdfu_getstatus_complete(usbd_device *device,
 		return;
 
 	case STATE_DFU_MANIFEST:
-		crc_reset();
-		crc_flash = crc_calculate_block((uint32_t*)prog.addr,prog.len/4);
 		/* Mark DATA0 register that we have just downloaded the code */
-		if((crc_ram == crc_flash) && (FLASH_OBR & 0x3FC00) != 0x00)  {
+		if((FLASH_OBR & 0x3FC00) != 0x00) {
 		  flash_unlock();
 		  FLASH_CR = 0;
 		  flash_erase_option_bytes();
@@ -433,18 +429,29 @@ static inline void led_advance(void)
 {
 	static int state = 0;
 
-	if (state < 5) {
-		led_set(state, 1);
-	} else if (state < 10) {
-		led_set(state - 5, 0);
-	} else if (state < 15) {
-		led_set(14 - state, 1);
-	} else if (state < 20) {
-		led_set(19 - state, 0);
-	}
+  if(state&1){
+    led_set(2, 1);
+    led_set(3, 0);
+    led_set(4, 1);
+  }else{
+    led_set(2, 0);
+    led_set(3, 1);
+    led_set(4, 0);
+  }
+  state++;
 
-	state++;
-	if(state == 20) state = 0;
+	/*if (state < 5) {*/
+		/*led_set(state, 1);*/
+	/*} else if (state < 10) {*/
+		/*led_set(state - 5, 0);*/
+	/*} else if (state < 15) {*/
+		/*led_set(14 - state, 1);*/
+	/*} else if (state < 20) {*/
+		/*led_set(19 - state, 0);*/
+	/*}*/
+
+	/*state++;*/
+	/*if(state == 20) state = 0;*/
 
 }
 
@@ -531,7 +538,7 @@ int main(void)
 			     * and want to jump the app
 			     */
 			    flash_program_option_bytes(FLASH_OBP_DATA0,
-						       0x00FF); 	
+						       0x00FF);
 			    flash_lock();
 			}
 			/* Set vector table base address. */

@@ -5,7 +5,7 @@ OBJCOPY = $(PREFIX)-objcopy
 
 GDB?=$(PREFIX)-gdb
 
-LIBOPENCM3 ?= /usr/local/arm-none-eabi
+LIBOPENCM3 ?= libopencm3
 
 # flashing options
 OOCD_INTERFACE  ?= flossjtag
