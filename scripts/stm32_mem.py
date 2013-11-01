@@ -238,14 +238,14 @@ if __name__ == "__main__":
     bin_crc = crc32(bin) & 0xffffffff
     bin_base_addr = options.addr
     bin_len = len(bin)
-    print ("Programming memory from 0x%08X...\r" % addr)
-
+    print("Programming memory from 0x%08X...\r" % addr)
+    stdout.flush()
     # writing stats here
     widgets = ['Writing: ', Percentage(), ' ', ETA(), ' ', Bar()]
     pbar = ProgressBar(widgets=widgets, maxval=len(bin), term_width=79).start()
     while bin:
         pbar.update(pbar.maxval - len(bin))
-
+        stdout.flush()
         # erase block and set address
         trynb = 5
         while trynb > 0:
@@ -276,15 +276,16 @@ if __name__ == "__main__":
 
     pbar.update(pbar.maxval - len(bin))
     pbar.finish()
+    stdout.flush()
 
     if stm32_full_crc(target, bin_base_addr, bin_len, bin_crc):
-        print("Full Program verification (CRC32) is OK")
+        print("\nFull Program verification (CRC32) is OK")
     else:
-        print("Full Program verficiation ERROR, CRC32 is invalid")
-        print("Programming NOT compete!")
+        print("\nFull Program verficiation ERROR, CRC32 is invalid")
+        print("Programming NOT compete!\n")
         exit(-1)
 
     # Run the downloaded program
     stm32_manifest(target)
-    print("\nAll operations complete!\n")
+    print("All operations complete!\n")
     exit(0)
