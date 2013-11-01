@@ -24,10 +24,10 @@
 #include <libopencm3/stm32/f1/rcc.h>
 #include <libopencm3/stm32/f1/gpio.h>
 #include <libopencm3/stm32/f1/flash.h>
+#include <libopencm3/stm32/crc.h>
 #include <libopencm3/cm3/scb.h>
 #include <libopencm3/usb/usbd.h>
 #include <libopencm3/usb/dfu.h>
-#include <crc32_zip.h>
 
 #ifndef VERSION
 #define VERSION         ""
@@ -39,6 +39,8 @@
 
 #define APP_ADDRESS	0x08002000
 #define SECTOR_SIZE	2048
+#define FLASH_START_ADDRESS	0x8002000
+#define FLASH_END_ADDRESS	0x8040000
 
 /* Commands sent with wBlockNum == 0 as per ST implementation. */
 #define CMD_SETADDR	0x21
@@ -54,6 +56,17 @@
 #define FLASH_OBP_DATA0 0x1FFFF804
 
 #define FLASH_OBP_RDP_KEY 0x5aa5
+
+
+#define TO32(addr)		(*(uint32_t *)(addr))
+
+typedef struct {
+	uint32_t cmd;
+	uint32_t start;
+	uint32_t length;
+	uint32_t crc;
+}ctrl_struct;
+
 
 void led_set(int, int);
 
@@ -157,11 +170,11 @@ static uint8_t usbdfu_getstatus(uint32_t *bwPollTimeout)
 	case STATE_DFU_DNLOAD_SYNC:
 		usbdfu_state = STATE_DFU_DNBUSY;
     if(prog.blocknum != 0)
-  		*bwPollTimeout = 40; /* 1 page write */
+  		*bwPollTimeout = 70; /* 1 page write */
     else {
       switch(prog.u.buf8[0]){
         case CMD_ERASE:
-          *bwPollTimeout = 20; /* min time for page erase */
+          *bwPollTimeout = 80; /* min time for page erase */
           break;
         case CMD_CRC:
         case CMD_SETADDR:
@@ -200,93 +213,96 @@ static void usbdfu_getstatus_complete(usbd_device *device,
 	case STATE_DFU_DNBUSY:
 
 		if(prog.blocknum == 0) {
-      /* when receiveing crc CMD, store crc for next data block */
-      if(prog.u.buf8[0] == CMD_CRC){
-        prog.crc = *(uint32_t*)(prog.u.buf8+1);
-        usbdfu_state = STATE_DFU_DNLOAD_IDLE;
-        return;
-      }
-      /* request a full mem crc with specified range */
-      if(prog.u.buf8[0] == CMD_FULL_CRC){
-        uint32_t start, length, crc;
-        start = MMIO32(prog.u.buf8+1);
-        length = MMIO32(prog.u.buf8+5);
-        crc = MMIO32(prog.u.buf8+9);
+			ctrl_struct * ctrl;
+			ctrl = (ctrl_struct*)prog.u.buf8;
+			switch(ctrl->cmd)
+			{
+				case CMD_CRC:
+					prog.crc = ctrl->crc;
+					usbdfu_state = STATE_DFU_DNLOAD_IDLE;
+					break;
+				case CMD_FULL_CRC:
 
-        /* Error unless otherwise */
-        usbdfu_state = STATE_DFU_ERROR;
-        usbdfu_status = DFU_STATUS_ERR_ADDRESS;
-        /* Check range in flashmem */
-			  if ((start >= 0x8002000) && (start < 0x8040000) &&
-            (start+length < 0x8040000)){
-          uint32_t range_crc = crc32_bitwise((void*)start, length, 0);
-          if(range_crc == crc)
-            usbdfu_state = STATE_DFU_DNLOAD_IDLE; /* OK */
-          else
-            usbdfu_status = DFU_STATUS_ERR_VERIFY;
-        }
-        return;
-      }
+			        /* Error unless otherwise */
+			        usbdfu_state = STATE_DFU_ERROR;
+			        usbdfu_status = DFU_STATUS_ERR_ADDRESS;
+			        /* Check range in flashmem */
+			        if ((ctrl->start >= FLASH_START_ADDRESS) &&
+			        	((ctrl->start+ctrl->length) <= FLASH_END_ADDRESS)) {
+						crc_reset();
+			        	uint32_t range_crc = crc_calculate_block((uint32_t*)ctrl->start, ctrl->length/4);
+			        	if(range_crc == ctrl->crc) {
+			        		usbdfu_state = STATE_DFU_DNLOAD_IDLE; /* OK */
+			        	}
+			        	else {
+			        		usbdfu_status = DFU_STATUS_ERR_VERIFY;
+			        	}
+			        }
+			        break;
+				case CMD_ERASE:
+					if ((ctrl->start < FLASH_START_ADDRESS) || (ctrl->start >= FLASH_END_ADDRESS)){
+						/* ERROR status instead of usb stall */
+						usbdfu_state = STATE_DFU_ERROR;
+						usbdfu_status = DFU_STATUS_ERR_ADDRESS;
+						break;
+					}
 
-			uint32_t address = *(uint32_t*)(prog.u.buf8+1);
-			if ((address < 0x8002000) || (address >= 0x8040000)){
-        /* ERROR status instead of usb stall */
-        usbdfu_state = STATE_DFU_ERROR;
-        usbdfu_status = DFU_STATUS_ERR_ADDRESS;
-				return;
+					flash_unlock();
+					led_set(0, 1);
+					flash_erase_page(ctrl->start);
+					//TODO: more than one page?
+					flash_lock();
+					led_set(0, 0);
+					prog.addr = ctrl->start;
+					break;
+				case CMD_SETADDR:
+					prog.addr = ctrl->start;
+					break;
 			}
-			switch(prog.u.buf8[0]) {
-			case CMD_ERASE:
-        flash_unlock(); led_set(0, 1);
-				flash_erase_page(address);
-		    flash_lock(); led_set(0, 0);
-				// break; // No break so erase sets the address!
-			case CMD_SETADDR:
-				prog.addr = address;
-			}
-    } else {
+		} else {
       /* compute CRC of received block, if not good, return
        * ERROR */
-      uint32_t block_crc = crc32_bitwise(prog.u.buf8, prog.len,
-          0); // init value of crc is 0
-      if (block_crc != prog.crc){
-        usbdfu_state = STATE_DFU_ERROR;
-        usbdfu_status = DFU_STATUS_ERR_VERIFY;
-        return;
-      }
-      flash_unlock();
-      led_set(1, 1);
-      uint32_t baseaddr = prog.addr + ((prog.blocknum - 2) *
-          SECTOR_SIZE);
-      for(i = 0; i < prog.len; i += 2)
-        flash_program_half_word(baseaddr + i,
-            *(uint16_t*)(prog.u.buf8 + i));
-      led_set(1, 0);
-      flash_lock();
-    }
+			uint32_t block_crc;
+			crc_reset();
+			block_crc = crc_calculate_block(prog.u.buf32,prog.len/4);
+					//crc32_bitwise(prog.u.buf8, prog.len,0); // init value of crc is 0
+			if (block_crc != prog.crc){
+				usbdfu_state = STATE_DFU_ERROR;
+				usbdfu_status = DFU_STATUS_ERR_VERIFY;
+				break;
+			}
+			flash_unlock();
+			led_set(1, 1);
+			uint32_t baseaddr = prog.addr + ((prog.blocknum - 2) * SECTOR_SIZE);
+			for(i = 0; i < prog.len; i += 2) {
+				flash_program_half_word(baseaddr + i, *(uint16_t*)(prog.u.buf8 + i));
+			}
+			led_set(1, 0);
+			flash_lock();
+		}
 
 		/* We jump straight to dfuDNLOAD-IDLE,
 		 * skipping dfuDNLOAD-SYNC
 		 */
 		usbdfu_state = STATE_DFU_DNLOAD_IDLE;
-		return;
+		break;
 
 	case STATE_DFU_MANIFEST:
 		/* Mark DATA0 register that we have just downloaded the code */
 		if((FLASH_OBR & 0x3FC00) != 0x00) {
-		  flash_unlock();
-		  FLASH_CR = 0;
-		  flash_erase_option_bytes();
-		  flash_program_option_bytes(FLASH_OBP_RDP, 0x5AA5);
-		  flash_program_option_bytes(FLASH_OBP_WRP10, 0x03FC);
-		  flash_program_option_bytes(FLASH_OBP_DATA0, 0xFF00);
-		  flash_lock();
+			flash_unlock();
+			FLASH_CR = 0;
+			flash_erase_option_bytes();
+			flash_program_option_bytes(FLASH_OBP_RDP, 0x5AA5);
+			flash_program_option_bytes(FLASH_OBP_WRP10, 0x03FC);
+			flash_program_option_bytes(FLASH_OBP_DATA0, 0xFF00);
+			flash_lock();
 		}
 		/* USB device must detach, we just reset... */
 		scb_reset_system();
-		return; /* Will never return */
+		break; /* Will never return */
 	default:
-		return;
+		break;
 	}
 }
 
@@ -297,8 +313,9 @@ static int usbdfu_control_request(usbd_device *device,
 						struct usb_setup_data *req))
 {
 
-	if((req->bmRequestType & 0x7F) != 0x21)
+	if((req->bmRequestType & 0x7F) != 0x21) {
 		return 0; /* Only accept class request */
+	}
 
 	switch(req->bRequest) {
 	case DFU_DNLOAD:
@@ -616,4 +633,3 @@ void sys_tick_handler()
 {
 	led_advance();
 }
-
