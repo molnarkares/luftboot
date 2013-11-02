@@ -213,7 +213,7 @@ static uint8_t usbdfu_getstatus(uint32_t *bwPollTimeout)
     if(prog.blocknum != 0)
   		*bwPollTimeout = 70; /* 1 page write */
     else {
-      switch(prog.u.buf8[0]){
+      switch(prog.u.buf32[0]){
         case CMD_ERASE:
           *bwPollTimeout = 80; /* min time for page erase */
           break;
@@ -517,7 +517,6 @@ int main(void)
 	}
 
 	rcc_clock_setup_in_hse_8mhz_out_72mhz();
-#endif
 
 	rcc_peripheral_enable_clock(&RCC_AHBENR, RCC_AHBENR_OTGFSEN);
 
