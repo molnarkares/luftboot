@@ -22,14 +22,17 @@ from __future__ import print_function
 
 from time import sleep
 import struct
-from sys import stdout, argv
+from sys import stdout, exit
 from os import path
 
 from optparse import OptionParser
 
-import usb
 import dfu
 import time
+
+import array
+from progressbar import ProgressBar, Percentage, ETA, Bar
+
 
 APP_ADDRESS = 0x08002000
 SECTOR_SIZE = 2048
@@ -37,25 +40,96 @@ SECTOR_SIZE = 2048
 CMD_GETCOMMANDS = 0x00
 CMD_SETADDRESSPOINTER = 0x21
 CMD_ERASE = 0x41
+CMD_NEXT_BLOCK_CRC = 0x51  # arbritrary value not in the DFU protocol
+CMD_RANGE_CRC = 0x52  # arbritrary value not in the DFU protocol
 
-def stm32_erase(dev, addr):
-    erase_cmd = struct.pack("<BL", CMD_ERASE, addr)
-    dev.download(0, erase_cmd)
+valid_manufacturers = ["STMicroelectronics",
+                       "Black Sphere Technologies",
+                       "TUDelft MavLab. 2012->13",
+                       "Transition Robotics Inc."]
+
+# construct a dict that transform error_code into text
+err_text = dict((eval("dfu." + name), name) for name in vars(dfu)
+                if name.startswith('DFU_STATUS_ERROR'))
+
+
+# compute crc the same way STM32 hardware engine does
+def stm32_crc(data):
+    polynomial = 0x04C11DB7
+    crc = 0xFFFFFFFF
+    if len(data) % 4 != 0:
+        raise ValueError("stm32_crc Error: data is not a multiple of 4")
+    a = array.array('I')
+    if a.itemsize != 4:  # Depends on implementation
+        raise ValueError("stm32_crc Error: itemsize in not 4, change to get size of 4")
+    a.fromstring(data)
+    #data32 = [struct.unpack_from('<L', data, i) for i in range(0, len(data), 4)]
+
+    for d in a:
+        crc ^= d
+        for i in range(32):
+            if crc & 0x80000000:
+                crc = (crc << 1) ^ polynomial
+            else:
+                crc <<= 1
+    return crc & 0xFFFFFFFF
+
+
+# Helper function to print text error from code
+def print_error(err_code):
+    error = err_text.get(err_code, "Unknown Error")
+    print("\nDFU error: {}".format(error))
+
+
+# helper function that loops waiting for a DFU state
+def stm32_wait_for_state(dev, state):
     while True:
         status = dev.get_status()
+        if status.bStatus != dfu.DFU_STATUS_OK:
+            print_error(status.bStatus)
+            uint32 = status.bwPollTimeout | (status.iString << 24)
+            print("Getting data: " + hex(uint32))
+            return False
         if status.bState == dfu.STATE_DFU_DOWNLOAD_BUSY:
-            sleep(status.bwPollTimeout / 1000.0)
-        if status.bState == dfu.STATE_DFU_DOWNLOAD_IDLE:
-            break
+            #sleep(status.bwPollTimeout / 1000.0)
+            sleep(.1)
+        if status.bState == state:
+            return True
+
+
+# Helper function to format commands in binary
+def pack_cmd(cmd=0, start=0, length=0, crc=0):
+    return struct.pack("<LLLL", cmd, start, length, crc)
+
+
+def stm32_erase(dev, addr):
+    erase_cmd = pack_cmd(cmd=CMD_ERASE, start=addr)
+    dev.download(0, erase_cmd)
+    return stm32_wait_for_state(dev, dfu.STATE_DFU_DOWNLOAD_IDLE)
+
+
+def stm32_send_next_crc(dev, crc):
+    crc_cmd = pack_cmd(cmd=CMD_NEXT_BLOCK_CRC, crc=crc)
+    dev.download(0, crc_cmd)
+    return stm32_wait_for_state(dev, dfu.STATE_DFU_DOWNLOAD_IDLE)
+
+
+def stm32_setAddr(dev, addr):
+    addr_cmd = pack_cmd(cmd=CMD_SETADDRESSPOINTER, start=addr)
+    dev.download(0, addr_cmd)
+    return stm32_wait_for_state(dev, dfu.STATE_DFU_DOWNLOAD_IDLE)
+
 
 def stm32_write(dev, data):
     dev.download(2, data)
-    while True:
-        status = dev.get_status()
-        if status.bState == dfu.STATE_DFU_DOWNLOAD_BUSY:
-            sleep(status.bwPollTimeout / 1000.0)
-        if status.bState == dfu.STATE_DFU_DOWNLOAD_IDLE:
-            break
+    return stm32_wait_for_state(dev, dfu.STATE_DFU_DOWNLOAD_IDLE)
+
+
+def stm32_full_crc(dev, addr, length, crc):
+    crc_cmd = pack_cmd(cmd=CMD_RANGE_CRC, start=addr, length=length, crc=crc)
+    dev.download(0, crc_cmd)
+    return stm32_wait_for_state(dev, dfu.STATE_DFU_DOWNLOAD_IDLE)
+
 
 def stm32_manifest(dev):
     dev.download(0, "")
@@ -64,9 +138,61 @@ def stm32_manifest(dev):
             status = dev.get_status()
         except:
             return
-        sleep(status.bwPollTimeout / 1000.0)
+        #sleep(status.bwPollTimeout / 1000.0)
+        sleep(.1)
         if status.bState == dfu.STATE_DFU_MANIFEST:
             break
+
+
+def get_valid_DFU_dev():
+    stm32devs = []
+    devs = dfu.finddevs()
+    for dev in devs:
+        try:
+            dfudev = dfu.dfu_device(*dev)
+        except:
+            if options.verbose:
+                print("Could not open dfu device %s id %04x:%04x "
+                      "maybe the os driver is claiming it?" %
+                      (dev[0].filename, dev[0].idVendor, dev[0].idProduct))
+            continue
+        try:
+            man = dfudev.handle.getString(dfudev.dev.iManufacturer, 30)
+            product = dfudev.handle.getString(dfudev.dev.iProduct, 30)
+            serial = dfudev.handle.getString(dfudev.dev.iSerialNumber, 40)
+        except Exception as e:
+            print("whoops... could not get device description.")
+            print("exception:", e)
+            continue
+
+        if options.verbose:
+            print("Found dfu device %s: id %04x:%04x %s - %s - %s" %
+                  (dfudev.dev.filename, dfudev.dev.idVendor,
+                   dfudev.dev.idProduct, man, product, serial))
+
+        if man in valid_manufacturers:
+            if options.product == "any":
+                stm32devs.append((dfudev, man, product, serial))
+            elif options.product == "Lisa/Lia":
+                if "Lisa/M" in product or "Lia" in product or "Fireswarm" in product:
+                    stm32devs.append((dfudev, man, product, serial))
+    return stm32devs
+
+
+def wait_for_valid_DFU():
+    for i in range(1, 60):
+        stm32devs = get_valid_DFU_dev()
+        if stm32devs:
+            break
+        print('.', end="")
+        stdout.flush()
+        time.sleep(0.5)
+    print("")
+    if not stm32devs:
+        print("No valid DFU devices found!")
+        exit(1)
+    return stm32devs
+
 
 def print_copyright():
     print("")
@@ -76,20 +202,6 @@ def print_copyright():
     print("License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>")
     print("")
 
-def init_progress_bar():
-    max_symbols = 50
-    print("[0%" + "="*int(max_symbols/2 - 4) + "50%" + "="*int(max_symbols/2 - 4) + "100%]")
-    print(" ", end="")
-    update_progress_bar.count = 0
-    update_progress_bar.symbol_limit = max_symbols
-
-def update_progress_bar(completed, total):
-    if completed and total:
-        percent = 100 * (float(completed)/float(total))
-        if (percent >= (update_progress_bar.count + (100.0 / update_progress_bar.symbol_limit))):
-            update_progress_bar.count += (100.0 / update_progress_bar.symbol_limit)
-            print("#", end="")
-        stdout.flush()
 
 if __name__ == "__main__":
     usage = "Usage: %prog [options] firmware.bin" + "\n" + "Run %prog --help to list the options."
@@ -97,9 +209,9 @@ if __name__ == "__main__":
     parser.add_option("-v", "--verbose",
                       action="store_true", dest="verbose")
     parser.add_option("--product", type="choice", choices=["any", "Lisa/Lia"],
-                      action="store", default="any",
+                      action="store", default="Lisa/Lia",
                       help="only upload to device where idProduct contains PRODUCT\n"
-                      "choices: (any, Lisa/Lia), default: any")
+                      "choices: (any, Lisa/Lia), default: Lisa/Lia")
     parser.add_option("--addr", type="int", action="store", dest="addr", default=APP_ADDRESS,
                       help="Upload start address (default: 0x08002000)")
     parser.add_option("-n", "--dry-run", action="store_true",
@@ -117,75 +229,14 @@ if __name__ == "__main__":
     if options.verbose:
         print_copyright()
 
-    for i in range(1,60):
-      devs = dfu.finddevs()
-      if not devs:
-        print('.', end="")
-        stdout.flush()
-        time.sleep(0.5)
-      else:
-        break
-    print("")
-    if not devs:
-        print("No DFU devices found!")
-        exit(1)
-    elif options.verbose:
-        print("Found %i DFU devices." % len(devs))
-
-    valid_manufacturers = []
-    valid_manufacturers.append("Transition Robotics Inc.")
-    valid_manufacturers.append("STMicroelectronics")
-    valid_manufacturers.append("Black Sphere Technologies")
-    valid_manufacturers.append("TUDelft MavLab. 2012->13")
-    valid_manufacturers.append("Lyorak")
-
-    # list of tuples with possible stm32 (autopilot) devices
-    stm32devs = []
-
-    for dev in devs:
-        try:
-            dfudev = dfu.dfu_device(*dev)
-        except:
-            if options.verbose:
-                print("Could not open DFU device %s ID %04x:%04x "
-                      "Maybe the OS driver is claiming it?" %
-                      (dev[0].filename, dev[0].idVendor, dev[0].idProduct))
-            continue
-        try:
-            man = dfudev.handle.getString(dfudev.dev.iManufacturer, 30)
-            product = dfudev.handle.getString(dfudev.dev.iProduct, 30)
-            serial = dfudev.handle.getString(dfudev.dev.iSerialNumber, 40)
-        except Exception as e:
-            print("Whoops... could not get device description.")
-            print("Exception:", e)
-            continue
-
-        if options.verbose:
-            print("Found DFU device %s: ID %04x:%04x %s - %s - %s" %
-                    (dfudev.dev.filename, dfudev.dev.idVendor,
-                     dfudev.dev.idProduct, man, product, serial))
-
-        if man in valid_manufacturers:
-            if options.product == "any":
-                stm32devs.append((dfudev, man, product, serial))
-            elif options.product == "Lisa/Lia":
-                if "Lisa/M" in product or "Lia" in product or "Fireswarm" in product:
-                    stm32devs.append((dfudev, man, product, serial))
-
-    if not stm32devs:
-        print("Could not find STM32 (autopilot) device.")
-        exit(1)
-
-    if len(stm32devs) > 1:
-        print("Warning: Found more than one potential board to flash.")
-        for (d, m, p, s) in stm32devs:
-            print("Found possible STM32 (autopilot) device %s: ID %04x:%04x %s - %s - %s" %
-                  (d.dev.filename, d.dev.idVendor, d.dev.idProduct, m, p, s))
+    #wait a few second until a valid DFU device is found
+    stm32devs = wait_for_valid_DFU()
 
     # use first potential board as target
-    target = stm32devs[0][0]
-    print("Using device %s: ID %04x:%04x %s - %s - %s" % (target.dev.filename,
-          target.dev.idVendor, target.dev.idProduct, man, product, serial))
+    target, man, product, serial = stm32devs[0]
+
+    print("Using device: %s - %s - %s" % (
+          man, product, serial))
 
     # if it's a dry run only, don't actually flash, just exit now
     if options.dry_run:
@@ -210,26 +261,63 @@ if __name__ == "__main__":
         print("Could not open binary file.")
         raise
 
-    # Get the file length for progress bar
-    bin_length = len(bin)
+    remainder = len(bin) % SECTOR_SIZE
+    print("Reading {}: {} bytes".format(path.basename(binfile),
+                                        len(bin)))
 
-    #addr = APP_ADDRESS
     addr = options.addr
-    print ("Programming memory from 0x%08X...\r" % addr)
-    
-    init_progress_bar()
-
+    bin_crc = stm32_crc(bin) & 0xffffffff
+    bin_base_addr = options.addr
+    bin_len = len(bin)
+    print("Programming memory from 0x%08X...\r" % addr)
+    stdout.flush()
+    # writing stats here
+    widgets = ['Writing: ', Percentage(), ' ', ETA(), ' ', Bar()]
+    pbar = ProgressBar(widgets=widgets, maxval=len(bin), term_width=79).start()
     while bin:
-        update_progress_bar((addr - options.addr),bin_length)
-        stm32_erase(target, addr)
-        stm32_write(target, bin[:SECTOR_SIZE])
+        pbar.update(pbar.maxval - len(bin))
+        stdout.flush()
+        # erase block and set address
+        trynb = 5
+        while trynb > 0:
+            if not stm32_erase(target, addr):
+                trynb -= 1
+                continue
+            break
+        if trynb == 0:
+            print("Error, tryed 5 times to erase page at 0x{:08X} without success.".format(addr))
+            exit(-1)
 
+        # compute CRC, send it, and write
+        crc = stm32_crc(bin[:SECTOR_SIZE]) & 0xffffffff
+        #print("python crc calculation: 0x{:08X}".format(crc))
+        trynb = 5
+        while trynb > 0:
+            if not stm32_send_next_crc(target, crc):
+                trynb -= 1
+                continue
+            if not stm32_write(target, bin[:SECTOR_SIZE]):
+                trynb -= 1
+                continue
+            break
+        if trynb == 0:
+            print("Error, tryed 5 times to program page at 0x{:08X} without success.".format(addr))
+            exit(-1)
         bin = bin[SECTOR_SIZE:]
         addr += SECTOR_SIZE
 
-    # Need to check all the way to 100% complete
-    update_progress_bar((addr - options.addr),bin_length)
+    pbar.update(pbar.maxval - len(bin))
+    pbar.finish()
+    stdout.flush()
 
+    if stm32_full_crc(target, bin_base_addr, bin_len, bin_crc):
+        print("\nFull Program verification (CRC32) is OK")
+    else:
+        print("\nFull Program verficiation ERROR, CRC32 is invalid")
+        print("Programming NOT compete!\n")
+        exit(-1)
+
+    # Run the downloaded program
     stm32_manifest(target)
-
-    print("\nAll operations complete!\n")
+    print("All operations complete!\n")
+    exit(0)

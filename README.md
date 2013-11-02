@@ -9,6 +9,9 @@ autopilot firmware using usb. It implements the dfu standard.
 Luftboot is based on the usbdfu bootloader implementation by Gareth McMullin
 for the Black Magic Probe project (http://www.blacksphere.co.nz/main/blackmagic).
 
+This fork focusses on integrity verification of the programmed memory by adding crc
+during USB transfer and after flash programming.
+
 Building
 --------
 

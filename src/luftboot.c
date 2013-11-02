@@ -48,13 +48,17 @@
 #define DEV_SERIAL      "NSERIAL"
 #endif
 
-#define APP_ADDRESS		0x08002000
-#define APP_END_ADDRESS	0x08040000
-#define SECTOR_SIZE	2048
+#define APP_ADDRESS	0x08002000
+#define PAGE_SIZE	2048
+#define BUFFER_SIZE (2048 + 0*4) // Ctrl struct + 1 PAGE
+#define FLASH_START_ADDRESS	0x8002000
+#define FLASH_END_ADDRESS	0x803FFFF
 
 /* Commands sent with wBlockNum == 0 as per ST implementation. */
 #define CMD_SETADDR	0x21
 #define CMD_ERASE	0x41
+#define CMD_NEXT_BLOCK_CRC 	0x51 // arbritrary value
+#define CMD_RANGE_CRC 	0x52 // arbritrary value
 
 #define FLASH_OBP_RDP 0x1FFFF800
 #define FLASH_OBP_WRP10 0x1FFFF808
@@ -65,13 +69,27 @@
 
 #define FLASH_OBP_RDP_KEY 0x5aa5
 
-static const char 
+
+#define TO32(addr)		(*(uint32_t *)(addr))
+
+typedef struct {
+	uint32_t cmd;
+	uint32_t start;
+	uint32_t length;
+	uint32_t crc;
+}ctrl_struct;
+
+volatile uint32_t upvar = 0x12345678;
+void led_set(int, int);
+
+static const char
 dev_serial[] __attribute__((section (".devserial"))) = DEV_SERIAL;
 
 /* We need a special large control buffer for this device: */
-uint8_t usbd_control_buffer[SECTOR_SIZE];
+uint8_t usbd_control_buffer[BUFFER_SIZE] __attribute__ ((aligned (4)));
 
 static enum dfu_state usbdfu_state = STATE_DFU_IDLE;
+static enum dfu_status usbdfu_status = DFU_STATUS_OK;
 
 static void gpio_init(void);
 static void gpio_uninit(void);
@@ -94,10 +112,14 @@ extern bool gw_can_flash_program(uint32_t address, uint8_t* data, uint16_t len);
 
 
 static struct {
-	uint8_t buf[sizeof(usbd_control_buffer)];
+	union{
+		uint8_t  buf8[sizeof(usbd_control_buffer)];
+		uint32_t buf32[sizeof(usbd_control_buffer)/sizeof(uint32_t)];
+	}u __attribute__ ((aligned (4)));
 	uint16_t len;
 	uint32_t addr;
 	uint16_t blocknum;
+  uint32_t crc;
 } prog;
 
 typedef struct {
@@ -132,7 +154,7 @@ const struct usb_dfu_descriptor dfu_function = {
 	.bDescriptorType = DFU_FUNCTIONAL,
 	.bmAttributes = USB_DFU_CAN_DOWNLOAD | USB_DFU_WILL_DETACH,
 	.wDetachTimeout = 255,
-	.wTransferSize = SECTOR_SIZE,
+	.wTransferSize = BUFFER_SIZE,
 	.bcdDFUVersion = 0x011A,
 };
 
@@ -188,19 +210,38 @@ static uint8_t usbdfu_getstatus(uint32_t *bwPollTimeout)
 	switch(usbdfu_state) {
 	case STATE_DFU_DNLOAD_SYNC:
 		usbdfu_state = STATE_DFU_DNBUSY;
-		*bwPollTimeout = 100;
-		break;
+    if(prog.blocknum != 0)
+  		*bwPollTimeout = 70; /* 1 page write */
+    else {
+      switch(prog.u.buf8[0]){
+        case CMD_ERASE:
+          *bwPollTimeout = 80; /* min time for page erase */
+          break;
+        case CMD_NEXT_BLOCK_CRC:
+        case CMD_SETADDR:
+          *bwPollTimeout = 1; /* very fast */
+          break;
+        case CMD_RANGE_CRC:
+          *bwPollTimeout = 100;
+          break;
+      }
+    }
+		return DFU_STATUS_OK;
 
 	case STATE_DFU_MANIFEST_SYNC:
 		/* Device will reset when read is complete */
 		usbdfu_state = STATE_DFU_MANIFEST;
-		break;
+		return DFU_STATUS_OK;
+
+  case STATE_DFU_ERROR:
+    /* in case of Error, send back status and
+     * go back to idle */
+    usbdfu_state = STATE_DFU_IDLE;
+    return usbdfu_status;
 
 	default:
-		break;
+		return DFU_STATUS_OK;
 	}
-	return DFU_STATUS_OK;
-
 }
 
 
@@ -210,80 +251,101 @@ static void usbdfu_getstatus_complete(usbd_device *device,
 	int i;
 	(void)req;
 
-	switch(usbdfu_state) {
-	case STATE_DFU_DNBUSY:
-		if(prog.blocknum == 0)
-		{
-			uint32_t bl_address = u8tou32(&prog.buf[1]);
-			if (bl_address < APP_ADDRESS)
-			{
-				uint16_t node = (uint16_t)(bl_address>>16);
-				// we will gateway to CAN nodes
-				if(!gw_can_bl_request(node))
-				{
-					usbd_ep_stall_set(device, 0, 1);
-					return;
-				}
-			}else if (bl_address >= APP_END_ADDRESS)
-			{
-				// out of range
-				usbd_ep_stall_set(device, 0, 1);
-				return;
-			}
-			prog.addr = bl_address;
-			switch(prog.buf[0]) {
-				case CMD_ERASE:
-					if (bl_address < APP_ADDRESS)
-					{
-						if(!gw_can_erase_sector(bl_address))
-						{
-							usbd_ep_stall_set(device, 0, 1);
-						}
-					}else
-					{
-						flash_unlock();
-						flash_erase_page(bl_address);
-						flash_lock();
-					}
-					break;
-/*				case CMD_SETADDR:
-					prog.addr = bl_address;
-					break; */
-			}
-		} else
-		{
-			uint32_t baseaddr = prog.addr + ((prog.blocknum - 2) *
-					dfu_function.wTransferSize);
-			if(baseaddr >= APP_ADDRESS) // program stm32
-			{
-				flash_unlock();
-				for(i = 0; i < prog.len; i += 2)
-				{
-					flash_program_half_word(baseaddr + i,
-										*(uint16_t*)(&prog.buf[i]));
-				}
-				flash_lock();
-			}else // gateway
-			{
-				if(!gw_can_flash_program(baseaddr,prog.buf,prog.len))
-				{
-					usbd_ep_stall_set(device, 0, 1);
-				}
-			}
-		}
+  switch(usbdfu_state) {
+    case STATE_DFU_DNBUSY:
 
-	/*	 We jump straight to dfuDNLOAD-IDLE,
-		 * skipping dfuDNLOAD-SYNC
-	*/
-		usbdfu_state = STATE_DFU_DNLOAD_IDLE;
-		return;
-	case STATE_DFU_MANIFEST:
-			 //USB device must detach, we just reset...
-		scb_reset_system();
-		return;  //Will never return
-	default:
-		return;
-	}
+      if(prog.blocknum == 0) {
+        ctrl_struct * ctrl;
+        ctrl = (ctrl_struct*)prog.u.buf8;
+        switch(ctrl->cmd)
+        {
+          case CMD_NEXT_BLOCK_CRC:
+            prog.crc = ctrl->crc;
+            break;
+          case CMD_RANGE_CRC:
+            /* Check range in flashmem */
+            if ((ctrl->start >= FLASH_START_ADDRESS) &&
+                ((ctrl->start+ctrl->length) <= FLASH_END_ADDRESS)) {
+              crc_reset();
+              uint32_t range_crc = crc_calculate_block((uint32_t*)ctrl->start,
+                  ctrl->length/4);
+              if(range_crc != ctrl->crc) {
+                usbdfu_state = STATE_DFU_ERROR;
+                usbdfu_status = DFU_STATUS_ERR_VERIFY;
+                return;
+              }
+            }else{ /* Out of range */
+              usbdfu_state = STATE_DFU_ERROR;
+              usbdfu_status = DFU_STATUS_ERR_ADDRESS;
+              return;
+            }
+            break;
+          case CMD_ERASE:
+            if ((ctrl->start < FLASH_START_ADDRESS) ||
+                (ctrl->start >= FLASH_END_ADDRESS)){
+              /* ERROR status instead of usb stall */
+              usbdfu_state = STATE_DFU_ERROR;
+              usbdfu_status = DFU_STATUS_ERR_ADDRESS;
+              return;
+            }
+
+            flash_unlock();
+            led_set(0, 1);
+            flash_erase_page(ctrl->start);
+            //TODO: more than one page?
+            flash_lock();
+            led_set(0, 0);
+            prog.addr = ctrl->start;
+            break;
+          case CMD_SETADDR:
+            prog.addr = ctrl->start;
+            break;
+        }
+      } else { /* prog.blocknum != 0 -> block write */
+        /* compute CRC of received block, if not good, return
+         * ERROR */
+        uint32_t block_crc;
+        crc_reset();
+        block_crc = crc_calculate_block(prog.u.buf32, prog.len/4);
+        if (block_crc != prog.crc){
+          upvar = block_crc;
+          usbdfu_state = STATE_DFU_ERROR;
+          usbdfu_status = DFU_STATUS_ERR_VERIFY;
+          break;
+        }
+        flash_unlock();
+        led_set(1, 1);
+        uint32_t baseaddr = prog.addr + ((prog.blocknum - 2) * PAGE_SIZE);
+        for(i = 0; i < prog.len; i += 2) {
+          flash_program_half_word(baseaddr + i, *(uint16_t*)(prog.u.buf8 + i));
+        }
+        led_set(1, 0);
+        flash_lock();
+      }
+
+      /* We jump straight to dfuDNLOAD-IDLE,
+       * skipping dfuDNLOAD-SYNC
+       */
+      usbdfu_state = STATE_DFU_DNLOAD_IDLE;
+      break;
+
+    case STATE_DFU_MANIFEST:
+      /* Mark DATA0 register that we have just downloaded the code */
+      if((FLASH_OBR & 0x3FC00) != 0x00) {
+        flash_unlock();
+        FLASH_CR = 0;
+        flash_erase_option_bytes();
+        flash_program_option_bytes(FLASH_OBP_RDP, 0x5AA5);
+        flash_program_option_bytes(FLASH_OBP_WRP10, 0x03FC);
+        flash_program_option_bytes(FLASH_OBP_DATA0, 0xFF00);
+        flash_lock();
+      }
+      /* USB device must detach, we just reset... */
+      scb_reset_system();
+      break; /* Will never return */
+    default:
+      break;
+  }
 }
 
 static int usbdfu_control_request(usbd_device *device,
@@ -293,8 +355,9 @@ static int usbdfu_control_request(usbd_device *device,
 						struct usb_setup_data *req))
 {
 
-	if((req->bmRequestType & 0x7F) != 0x21)
+	if((req->bmRequestType & 0x7F) != 0x21) {
 		return 0; /* Only accept class request */
+	}
 
 	switch(req->bRequest) {
 	case DFU_DNLOAD:
@@ -305,7 +368,10 @@ static int usbdfu_control_request(usbd_device *device,
 			/* Copy download data for use on GET_STATUS */
 			prog.blocknum = req->wValue;
 			prog.len = *len;
-			memcpy(prog.buf, *buf, *len);
+			/* Cannot copy in block of 4 bytes for all commands */
+      /* as for erase cmd, payload is 1+4 (CMD_ERASE + ADDR(4 bytes)) */
+      /*memcpy(prog.u.buf2, (uint32_t*)*buf, (*len)/sizeof(uint32_t));*/
+			memcpy(prog.u.buf8, *buf, *len);
 			usbdfu_state = STATE_DFU_DNLOAD_SYNC;
 			return 1;
 		}
@@ -326,13 +392,19 @@ static int usbdfu_control_request(usbd_device *device,
 					     */
 
 		(*buf)[0] = usbdfu_getstatus(&bwPollTimeout);
-		(*buf)[1] = bwPollTimeout & 0xFF;
-		(*buf)[2] = (bwPollTimeout >> 8) & 0xFF;
-		(*buf)[3] = (bwPollTimeout >> 16) & 0xFF;
+		(*buf)[1] = upvar & 0xFF;
+		(*buf)[2] = (upvar >> 8) & 0xFF;
+		(*buf)[3] = (upvar >> 16) & 0xFF;
+		(*buf)[5] = (upvar >> 24) & 0xFF;
 		(*buf)[4] = usbdfu_state;
-		(*buf)[5] = 0;	/* iString not used here */
-		*len = 6;
+    *len = 6;
 
+		/*(*buf)[0] = usbdfu_getstatus(&bwPollTimeout);*/
+		/*(*buf)[1] = bwPollTimeout & 0xFF;*/
+		/*(*buf)[2] = (bwPollTimeout >> 8) & 0xFF;*/
+		/*(*buf)[3] = (bwPollTimeout >> 16) & 0xFF;*/
+		/*(*buf)[4] = usbdfu_state;*/
+		/*(*buf)[5] = 0;	[> iString not used here <]*/
 		*complete = usbdfu_getstatus_complete;
 
 		return 1;
@@ -445,6 +517,15 @@ int main(void)
 	}
 
 	rcc_clock_setup_in_hse_8mhz_out_72mhz();
+#endif
+
+	rcc_peripheral_enable_clock(&RCC_AHBENR, RCC_AHBENR_OTGFSEN);
+
+  /* Enable crc engine for integrity verification */
+	rcc_peripheral_enable_clock(&RCC_AHBENR, RCC_AHBENR_CRCEN);
+
+	gpio_init();
+
 	systick_set_clocksource(STK_CTRL_CLKSOURCE_AHB_DIV8);
 	systick_set_reload(SYSTICK_TIMEOUT_100MS);
 	systick_interrupt_enable();

@@ -5,8 +5,6 @@ OBJCOPY = $(PREFIX)-objcopy
 
 GDB?=$(PREFIX)-gdb
 
-#LIBOPENCM3 ?= libopencm3
-
 LIBOPENCM3 ?= ../../libopencm3
 OOCD_INTERFACE  ?= jlink
 OOCD_TARGET     ?= stm32f1x
@@ -31,7 +29,7 @@ $(info Not using gcc-arm-embedded, nano specs disabled!!!)
 endif
 endif
 
-CFLAGS += -Os -g3 -Istm32/include -mcpu=cortex-m3 -mthumb -msoft-float -DSTM32F1 \
+CFLAGS += -Os -g3 -Istm32/include -I. -mcpu=cortex-m3 -mthumb -msoft-float -DSTM32F1 \
 	-I$(LIBOPENCM3)/include --function-sections --data-sections \
 	-DVERSION="\"$(VERSION)\"" -DDEV_SERIAL="\"$(DEV_SERIAL)\""
 LDFLAGS_BOOT = -lopencm3_stm32f1 -Wl,--defsym,_stack=0x20005000 \
