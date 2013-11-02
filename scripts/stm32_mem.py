@@ -30,7 +30,7 @@ from optparse import OptionParser
 import dfu
 import time
 
-from binascii import crc32
+import array
 from progressbar import ProgressBar, Percentage, ETA, Bar
 
 
@@ -40,8 +40,8 @@ SECTOR_SIZE = 2048
 CMD_GETCOMMANDS = 0x00
 CMD_SETADDRESSPOINTER = 0x21
 CMD_ERASE = 0x41
-CMD_CRC = 0x51  # arbritrary value not in the DFU protocol
-CMD_FULL_CRC = 0x52  # arbritrary value not in the DFU protocol
+CMD_NEXT_BLOCK_CRC = 0x51  # arbritrary value not in the DFU protocol
+CMD_RANGE_CRC = 0x52  # arbritrary value not in the DFU protocol
 
 valid_manufacturers = ["STMicroelectronics",
                        "Black Sphere Technologies",
@@ -51,6 +51,28 @@ valid_manufacturers = ["STMicroelectronics",
 # construct a dict that transform error_code into text
 err_text = dict((eval("dfu." + name), name) for name in vars(dfu)
                 if name.startswith('DFU_STATUS_ERROR'))
+
+
+# compute crc the same way STM32 hardware engine does
+def stm32_crc(data):
+    polynomial = 0x04C11DB7
+    crc = 0xFFFFFFFF
+    if len(data) % 4 != 0:
+        raise ValueError("stm32_crc Error: data is not a multiple of 4")
+    a = array.array('I')
+    if a.itemsize != 4:  # Depends on implementation
+        raise ValueError("stm32_crc Error: itemsize in not 4, change to get size of 4")
+    a.fromstring(data)
+    #data32 = [struct.unpack_from('<L', data, i) for i in range(0, len(data), 4)]
+
+    for d in a:
+        crc ^= d
+        for i in range(32):
+            if crc & 0x80000000:
+                crc = (crc << 1) ^ polynomial
+            else:
+                crc <<= 1
+    return crc & 0xFFFFFFFF
 
 
 # Helper function to print text error from code
@@ -65,27 +87,35 @@ def stm32_wait_for_state(dev, state):
         status = dev.get_status()
         if status.bStatus != dfu.DFU_STATUS_OK:
             print_error(status.bStatus)
+            uint32 = status.bwPollTimeout | (status.iString << 24)
+            print("Getting data: " + hex(uint32))
             return False
         if status.bState == dfu.STATE_DFU_DOWNLOAD_BUSY:
-            sleep(status.bwPollTimeout / 1000.0)
+            #sleep(status.bwPollTimeout / 1000.0)
+            sleep(.1)
         if status.bState == state:
             return True
 
 
+# Helper function to format commands in binary
+def pack_cmd(cmd=0, start=0, length=0, crc=0):
+    return struct.pack("<LLLL", cmd, start, length, crc)
+
+
 def stm32_erase(dev, addr):
-    erase_cmd = struct.pack("<BL", CMD_ERASE, addr)
+    erase_cmd = pack_cmd(cmd=CMD_ERASE, start=addr)
     dev.download(0, erase_cmd)
     return stm32_wait_for_state(dev, dfu.STATE_DFU_DOWNLOAD_IDLE)
 
 
 def stm32_send_next_crc(dev, crc):
-    crc_cmd = struct.pack("<BL", CMD_CRC, crc)
+    crc_cmd = pack_cmd(cmd=CMD_NEXT_BLOCK_CRC, crc=crc)
     dev.download(0, crc_cmd)
     return stm32_wait_for_state(dev, dfu.STATE_DFU_DOWNLOAD_IDLE)
 
 
 def stm32_setAddr(dev, addr):
-    addr_cmd = struct.pack("<BL", CMD_SETADDRESSPOINTER, addr)
+    addr_cmd = pack_cmd(cmd=CMD_SETADDRESSPOINTER, start=addr)
     dev.download(0, addr_cmd)
     return stm32_wait_for_state(dev, dfu.STATE_DFU_DOWNLOAD_IDLE)
 
@@ -96,7 +126,7 @@ def stm32_write(dev, data):
 
 
 def stm32_full_crc(dev, addr, length, crc):
-    crc_cmd = struct.pack("<BLLL", CMD_FULL_CRC, addr, length, crc)
+    crc_cmd = pack_cmd(cmd=CMD_RANGE_CRC, start=addr, length=length, crc=crc)
     dev.download(0, crc_cmd)
     return stm32_wait_for_state(dev, dfu.STATE_DFU_DOWNLOAD_IDLE)
 
@@ -108,7 +138,8 @@ def stm32_manifest(dev):
             status = dev.get_status()
         except:
             return
-        sleep(status.bwPollTimeout / 1000.0)
+        #sleep(status.bwPollTimeout / 1000.0)
+        sleep(.1)
         if status.bState == dfu.STATE_DFU_MANIFEST:
             break
 
@@ -235,17 +266,17 @@ if __name__ == "__main__":
                                         len(bin)))
 
     addr = options.addr
-    bin_crc = crc32(bin) & 0xffffffff
+    bin_crc = stm32_crc(bin) & 0xffffffff
     bin_base_addr = options.addr
     bin_len = len(bin)
-    print ("Programming memory from 0x%08X...\r" % addr)
-
+    print("Programming memory from 0x%08X...\r" % addr)
+    stdout.flush()
     # writing stats here
     widgets = ['Writing: ', Percentage(), ' ', ETA(), ' ', Bar()]
     pbar = ProgressBar(widgets=widgets, maxval=len(bin), term_width=79).start()
     while bin:
         pbar.update(pbar.maxval - len(bin))
-
+        stdout.flush()
         # erase block and set address
         trynb = 5
         while trynb > 0:
@@ -254,11 +285,12 @@ if __name__ == "__main__":
                 continue
             break
         if trynb == 0:
-            print("Error, tryed 5 times to erase page at {:08X} without success.")
+            print("Error, tryed 5 times to erase page at 0x{:08X} without success.".format(addr))
             exit(-1)
 
         # compute CRC, send it, and write
-        crc = crc32(bin[:SECTOR_SIZE]) & 0xffffffff
+        crc = stm32_crc(bin[:SECTOR_SIZE]) & 0xffffffff
+        #print("python crc calculation: 0x{:08X}".format(crc))
         trynb = 5
         while trynb > 0:
             if not stm32_send_next_crc(target, crc):
@@ -269,22 +301,23 @@ if __name__ == "__main__":
                 continue
             break
         if trynb == 0:
-            print("Error, tryed 5 times to program page at {:08X} without success.")
+            print("Error, tryed 5 times to program page at 0x{:08X} without success.".format(addr))
             exit(-1)
         bin = bin[SECTOR_SIZE:]
         addr += SECTOR_SIZE
 
     pbar.update(pbar.maxval - len(bin))
     pbar.finish()
+    stdout.flush()
 
     if stm32_full_crc(target, bin_base_addr, bin_len, bin_crc):
-        print("Full Program verification (CRC32) is OK")
+        print("\nFull Program verification (CRC32) is OK")
     else:
-        print("Full Program verficiation ERROR, CRC32 is invalid")
-        print("Programming NOT compete!")
+        print("\nFull Program verficiation ERROR, CRC32 is invalid")
+        print("Programming NOT compete!\n")
         exit(-1)
 
     # Run the downloaded program
     stm32_manifest(target)
-    print("\nAll operations complete!\n")
+    print("All operations complete!\n")
     exit(0)
