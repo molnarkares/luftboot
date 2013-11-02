@@ -84,7 +84,7 @@ static uint8_t usbdfu_getstatus(uint32_t *bwPollTimeout);
 static void usbdfu_getstatus_complete(usbd_device *device, struct usb_setup_data *req);
 static int usbdfu_control_request(usbd_device *device, struct usb_setup_data *req, uint8_t **buf,
 		uint16_t *len, void (**complete)(usbd_device *device, struct usb_setup_data *req));
-
+static inline uint32_t u8tou32(uint8_t*);
 
 #define SYSTICK_TIMEOUT_100MS	900000
 
@@ -203,6 +203,7 @@ static uint8_t usbdfu_getstatus(uint32_t *bwPollTimeout)
 
 }
 
+
 static void usbdfu_getstatus_complete(usbd_device *device,
 				      struct usb_setup_data *req)
 {
@@ -213,7 +214,7 @@ static void usbdfu_getstatus_complete(usbd_device *device,
 	case STATE_DFU_DNBUSY:
 		if(prog.blocknum == 0)
 		{
-			uint32_t bl_address = *(uint32_t*)(prog.buf+1);
+			uint32_t bl_address = u8tou32(&prog.buf[1]);
 			if (bl_address < APP_ADDRESS)
 			{
 				uint16_t node = (uint16_t)(bl_address>>16);
@@ -259,7 +260,7 @@ static void usbdfu_getstatus_complete(usbd_device *device,
 				for(i = 0; i < prog.len; i += 2)
 				{
 					flash_program_half_word(baseaddr + i,
-										*(uint16_t*)(prog.buf+i));
+										*(uint16_t*)(&prog.buf[i]));
 				}
 				flash_lock();
 			}else // gateway
@@ -490,4 +491,14 @@ static char *get_dev_unique_id(char *s)
 void sys_tick_handler()
 {
 	led_advance();
+}
+
+static inline uint32_t u8tou32(uint8_t* pu8)
+{
+	uint32_t retval;
+	retval = (uint32_t)(pu8[0]) 		|
+			((uint32_t)(pu8[1])) << 8 	|
+			((uint32_t)(pu8[2])) << 16 	|
+			((uint32_t)(pu8[3])) << 24;
+	return retval;
 }

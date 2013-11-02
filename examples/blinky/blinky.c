@@ -67,6 +67,17 @@ int main(void)
 			__asm__("nop");
 
 		gpio_set(GPIOA, GPIO10);	        /* LED on/off */
+
+		for (i = 0; i < 400000; i++)	/* Wait a bit. */
+			__asm__("nop");
+
+		gpio_clear(GPIOA, GPIO10);	/* LED on/off */
+
+		for (i = 0; i < 400000; i++)	/* Wait a bit. */
+			__asm__("nop");
+
+		gpio_set(GPIOA, GPIO10);	        /* LED on/off */
+
 	}
 
 	return 0;
