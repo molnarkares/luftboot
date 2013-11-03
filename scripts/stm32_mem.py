@@ -33,6 +33,10 @@ import time
 import array
 from progressbar import ProgressBar, Percentage, ETA, Bar
 
+import crcmod
+
+stm32_crcmod = crcmod.mkCrcFun(0x104C11DB7, initCrc=0xFFFFFFFF, rev=True) #, xorOut=0xFFFFFFFF)
+
 
 APP_ADDRESS = 0x08002000
 SECTOR_SIZE = 2048
@@ -46,6 +50,7 @@ CMD_RANGE_CRC = 0x52  # arbritrary value not in the DFU protocol
 valid_manufacturers = ["STMicroelectronics",
                        "Black Sphere Technologies",
                        "TUDelft MavLab. 2012->13",
+                       "Lyorak",
                        "Transition Robotics Inc."]
 
 # construct a dict that transform error_code into text
@@ -54,25 +59,25 @@ err_text = dict((eval("dfu." + name), name) for name in vars(dfu)
 
 
 # compute crc the same way STM32 hardware engine does
-def stm32_crc(data):
-    polynomial = 0x04C11DB7
-    crc = 0xFFFFFFFF
-    if len(data) % 4 != 0:
-        raise ValueError("stm32_crc Error: data is not a multiple of 4")
-    a = array.array('I')
-    if a.itemsize != 4:  # Depends on implementation
-        raise ValueError("stm32_crc Error: itemsize in not 4, change to get size of 4")
-    a.fromstring(data)
-    #data32 = [struct.unpack_from('<L', data, i) for i in range(0, len(data), 4)]
+#def stm32_crc(data):
+#    polynomial = 0x04C11DB7
+#    crc = 0xFFFFFFFF
+#    if len(data) % 4 != 0:
+#        raise ValueError("stm32_crc Error: data is not a multiple of 4")
+#    a = array.array('I')
+#    if a.itemsize != 4:  # Depends on implementation
+#        raise ValueError("stm32_crc Error: itemsize in not 4, change to get size of 4")
+#    a.fromstring(data)
+#    #data32 = [struct.unpack_from('<L', data, i) for i in range(0, len(data), 4)]
 
-    for d in a:
-        crc ^= d
-        for i in range(32):
-            if crc & 0x80000000:
-                crc = (crc << 1) ^ polynomial
-            else:
-                crc <<= 1
-    return crc & 0xFFFFFFFF
+#    for d in a:
+#        crc ^= d
+#        for i in range(32):
+#            if crc & 0x80000000:
+#                crc = (crc << 1) ^ polynomial
+#            else:
+#                crc <<= 1
+#    return crc & 0xFFFFFFFF
 
 
 # Helper function to print text error from code
@@ -209,9 +214,9 @@ if __name__ == "__main__":
     parser.add_option("-v", "--verbose",
                       action="store_true", dest="verbose")
     parser.add_option("--product", type="choice", choices=["any", "Lisa/Lia"],
-                      action="store", default="Lisa/Lia",
+                      action="store", default="any",
                       help="only upload to device where idProduct contains PRODUCT\n"
-                      "choices: (any, Lisa/Lia), default: Lisa/Lia")
+                      "choices: (any, Lisa/Lia), default: any")
     parser.add_option("--addr", type="int", action="store", dest="addr", default=APP_ADDRESS,
                       help="Upload start address (default: 0x08002000)")
     parser.add_option("-n", "--dry-run", action="store_true",
@@ -266,7 +271,7 @@ if __name__ == "__main__":
                                         len(bin)))
 
     addr = options.addr
-    bin_crc = stm32_crc(bin) & 0xffffffff
+    bin_crc = stm32_crcmod(bin) & 0xffffffff
     bin_base_addr = options.addr
     bin_len = len(bin)
     print("Programming memory from 0x%08X...\r" % addr)
@@ -289,7 +294,7 @@ if __name__ == "__main__":
             exit(-1)
 
         # compute CRC, send it, and write
-        crc = stm32_crc(bin[:SECTOR_SIZE]) & 0xffffffff
+        crc = stm32_crcmod(bin[:SECTOR_SIZE]) & 0xffffffff
         #print("python crc calculation: 0x{:08X}".format(crc))
         trynb = 5
         while trynb > 0:

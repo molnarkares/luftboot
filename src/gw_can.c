@@ -509,3 +509,8 @@ bool gw_can_flash_program(uint32_t address, uint8_t* data, uint16_t len)
 	return true;
 }
 
+uint32_t revbit(uint32_t data)
+{
+  asm("rbit r0,r0");
+  return data;
+};

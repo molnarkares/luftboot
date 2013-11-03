@@ -102,7 +102,9 @@ static uint8_t usbdfu_getstatus(uint32_t *bwPollTimeout);
 static void usbdfu_getstatus_complete(usbd_device *device, struct usb_setup_data *req);
 static int usbdfu_control_request(usbd_device *device, struct usb_setup_data *req, uint8_t **buf,
 		uint16_t *len, void (**complete)(usbd_device *device, struct usb_setup_data *req));
-static inline uint32_t u8tou32(uint8_t*);
+static uint32_t crc_calculate_blockrev(uint32_t *datap, int size);
+extern uint32_t revbit(uint32_t data);
+
 
 #define SYSTICK_TIMEOUT_100MS	900000
 
@@ -267,7 +269,7 @@ static void usbdfu_getstatus_complete(usbd_device *device,
             if ((ctrl->start >= FLASH_START_ADDRESS) &&
                 ((ctrl->start+ctrl->length) <= FLASH_END_ADDRESS)) {
               crc_reset();
-              uint32_t range_crc = crc_calculate_block((uint32_t*)ctrl->start,
+              uint32_t range_crc = crc_calculate_blockrev((uint32_t*)ctrl->start,
                   ctrl->length/4);
               if(range_crc != ctrl->crc) {
                 usbdfu_state = STATE_DFU_ERROR;
@@ -306,7 +308,7 @@ static void usbdfu_getstatus_complete(usbd_device *device,
          * ERROR */
         uint32_t block_crc;
         crc_reset();
-        block_crc = crc_calculate_block(prog.u.buf32, prog.len/4);
+        block_crc = crc_calculate_blockrev(prog.u.buf32, prog.len/4);
         if (block_crc != prog.crc){
           upvar = block_crc;
           usbdfu_state = STATE_DFU_ERROR;
@@ -573,12 +575,16 @@ void sys_tick_handler()
 	led_advance();
 }
 
-static inline uint32_t u8tou32(uint8_t* pu8)
+
+
+
+static uint32_t crc_calculate_blockrev(uint32_t *datap, int size)
 {
-	uint32_t retval;
-	retval = (uint32_t)(pu8[0]) 		|
-			((uint32_t)(pu8[1])) << 8 	|
-			((uint32_t)(pu8[2])) << 16 	|
-			((uint32_t)(pu8[3])) << 24;
-	return retval;
+	int i;
+	for (i = 0; i < size; i++) {
+		CRC_DR = revbit(datap[i]);
+	}
+	return revbit(CRC_DR);
 }
+
+

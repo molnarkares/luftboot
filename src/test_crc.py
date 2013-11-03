@@ -10,6 +10,7 @@ import array
 import binascii
 import crcmod
 import zlib
+import numpy
 
 
 def stm32_crc(data):
@@ -32,22 +33,23 @@ def stm32_crc(data):
                 crc <<= 1
     return crc & 0xFFFFFFFF
 
-p = 0x04C11DB7
-d = 0
-for i in range(32):
-    d <<= 1
-    if p & (1 << i):
-        d |= 1
-
-print(hex(d))
+#p = 0x04C11DB7
+#d = 0
+#for i in range(32):
+#    d <<= 1
+#    if p & (1 << i):
+#        d |= 1
+#print(hex(d))
 
 print("")
 data = open("filename.bin", 'rb').read()[:2048]
-print("slow right = {:08X}".format(stm32_crc(data)))
+#data = array.array('B',[2])*4
+#a32 = array.array('I')
+#a32.fromstring(data)
 
-stm32_crcmod = crcmod.mkCrcFun(0x04C11DB7, initCrc=0xFFFFFFFF, rev=True, xorOut=0)
+
+stm32_crcmod = crcmod.mkCrcFun(0x104C11DB7, initCrc=0xFFFFFFFF, rev=True) #,xorOut=0xFFFFFFFF)
+print("slow right = {:08X}".format(stm32_crc(data)))
 print("crcmod impl = {:08X}".format(stm32_crcmod(data)))
-stm32_crcmod = crcmod.mkCrcFun(d, initCrc=0xFFFFFFFF, rev=True, xorOut=0)
-print("crcmod2 impl = {:08X}".format(stm32_crcmod(data)))
-#print("zlib impl = {:08X}".format(zlib.crc32(data, 0)))
-#print("binascii impl = {:08X}".format(binascii.crc32(data)))
+print("zlib impl = {:08X}".format(zlib.crc32(data,0xFFFFFFFF)))
+print("binascii impl = {:08X}".format(binascii.crc32(data,0xFFFFFFFF)))
