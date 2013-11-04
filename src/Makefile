@@ -65,11 +65,11 @@ luftboot.hex: luftboot.elf
 
 %.o: %.c
 	@printf "  CC      $(<F)\n"
-	$(Q)$(CC) $(CFLAGS) -o $@ -c $<
+	$(Q)$(CC) $(CFLAGS) -Wa,-aln=$*.s -o $@ -c $<
 
 clean:
 	@echo "  CLEAN   luftboot"
-	$(Q)-rm -rf luftboot.o gw_can.o luftboot.elf luftboot.bin luftboot.hex mapfile
+	$(Q)-rm -rf *.o *.s *.elf *.bin *.hex mapfile
 
 ifeq ($(BMP_PORT),)
 flash: luftboot.hex
