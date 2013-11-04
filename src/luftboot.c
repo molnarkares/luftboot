@@ -70,8 +70,7 @@ typedef struct
 
 volatile uint32_t upvar = 0x12345678;
 
-static const char dev_serial[] __attribute__((section (".devserial")))
-= DEV_SERIAL;
+static const char dev_serial[] __attribute__((section (".devserial"))) = DEV_SERIAL;
 
 /* We need a special large control buffer for this device: */
 uint8_t usbd_control_buffer[BUFFER_SIZE] __attribute__ ((aligned (4)));
@@ -79,41 +78,28 @@ uint8_t usbd_control_buffer[BUFFER_SIZE] __attribute__ ((aligned (4)));
 static enum dfu_state usbdfu_state = STATE_DFU_IDLE;
 static enum dfu_status usbdfu_status = DFU_STATUS_OK;
 
-static void
-gpio_init(void);
-static void
-gpio_uninit(void);
-static bool
-gpio_force_bootloader(void);
-static void
-led_advance(void);
-static void
-led_set(int id, int on);
+static void gpio_init(void);
+static void gpio_uninit(void);
+static bool gpio_force_bootloader(void);
+static void led_advance(void);
+static void led_set(int id, int on);
 
-static char *
-get_dev_unique_id(char *serial_no);
-static uint8_t
-usbdfu_getstatus(uint32_t *bwPollTimeout);
-static void
-usbdfu_getstatus_complete(usbd_device *device, struct usb_setup_data *req);
-static int
-usbdfu_control_request(usbd_device *device, struct usb_setup_data *req,
-                uint8_t **buf, uint16_t *len,
+static char * get_dev_unique_id(char *serial_no);
+static uint8_t usbdfu_getstatus(uint32_t *bwPollTimeout);
+static void usbdfu_getstatus_complete(usbd_device *device,
+                struct usb_setup_data *req);
+static int usbdfu_control_request(usbd_device *device,
+                struct usb_setup_data *req, uint8_t **buf, uint16_t *len,
                 void (**complete)(usbd_device *device,
                                 struct usb_setup_data *req));
-static uint32_t
-crc_calculate_blockrev(uint32_t *datap, int size);
-static uint32_t
-revbit(uint32_t data);
+static uint32_t crc_calculate_blockrev(uint32_t *datap, int size);
+static uint32_t revbit(uint32_t data);
 
 #define SYSTICK_TIMEOUT_100MS	900000
 
-extern bool
-gw_can_erase_sector(uint32_t address);
-extern bool
-gw_can_bl_request(uint16_t node);
-extern bool
-gw_can_flash_program(uint32_t address, uint8_t* data, uint16_t len);
+extern bool gw_can_erase_sector(uint32_t address);
+extern bool gw_can_bl_request(uint16_t node);
+extern bool gw_can_flash_program(uint32_t address, uint8_t* data, uint16_t len);
 
 static struct
 {
@@ -557,16 +543,14 @@ void sys_tick_handler()
 static uint32_t crc_calculate_blockrev(uint32_t *datap, int size)
 {
     int i;
+    register uint32_t tmpdata;
     for (i = 0; i < size; i++)
     {
-        CRC_DR = revbit(datap[i]);
+        tmpdata = datap[i];
+        asm("rbit %1,%0": "=r" (tmpdata) : "r" (tmpdata));
+        CRC_DR = tmpdata;
     }
-    return revbit(CRC_DR);
+    tmpdata = CRC_DR;
+    asm("rbit %1,%0": "=r" (tmpdata) : "r" (tmpdata));
+    return tmpdata;
 }
-
-static uint32_t revbit(uint32_t data)
-{
-    asm("rbit %1,%0": "=r" (data) : "r" (data));
-    return data;
-}
-;
