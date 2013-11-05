@@ -546,11 +546,17 @@ static uint32_t crc_calculate_blockrev(uint32_t *datap, int size)
     register uint32_t tmpdata;
     for (i = 0; i < size; i++)
     {
-        tmpdata = datap[i];
-        asm("rbit %1,%0": "=r" (tmpdata) : "r" (tmpdata));
-        CRC_DR = tmpdata;
+        CRC_DR = revbit(datap[i]);
     }
-    tmpdata = CRC_DR;
-    asm("rbit %1,%0": "=r" (tmpdata) : "r" (tmpdata));
+    tmpdata = revbit(CRC_DR);
     return tmpdata;
 }
+
+
+static uint32_t revbit(uint32_t data)
+{
+    register uint32_t retval;
+    asm("rbit %[result],%[input]": [result] "=r" (retval) : [input] "r" (data));
+    return retval;
+};
+
