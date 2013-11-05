@@ -70,9 +70,10 @@ typedef struct {
 
 volatile uint32_t upvar = 0x12345678;
 void led_set(int, int);
+static uint32_t crc_calculate_blockrev(uint32_t *datap, int size);
+static uint32_t revbit(uint32_t data);
 
-static const char
-dev_serial[] __attribute__((section (".devserial"))) = DEV_SERIAL;
+static const char dev_serial[] __attribute__((section (".devserial"))) = DEV_SERIAL;
 
 /* We need a special large control buffer for this device: */
 uint8_t usbd_control_buffer[BUFFER_SIZE] __attribute__ ((aligned (4)));
@@ -226,7 +227,7 @@ static void usbdfu_getstatus_complete(usbd_device *device,
             if ((ctrl->start >= FLASH_START_ADDRESS) &&
                 ((ctrl->start+ctrl->length) <= FLASH_END_ADDRESS)) {
               crc_reset();
-              uint32_t range_crc = crc_calculate_block((uint32_t*)ctrl->start,
+              uint32_t range_crc = crc_calculate_blockrev((uint32_t*)ctrl->start,
                   ctrl->length/4);
               if(range_crc != ctrl->crc) {
                 usbdfu_state = STATE_DFU_ERROR;
@@ -265,7 +266,7 @@ static void usbdfu_getstatus_complete(usbd_device *device,
          * ERROR */
         uint32_t block_crc;
         crc_reset();
-        block_crc = crc_calculate_block(prog.u.buf32, prog.len/4);
+        block_crc = crc_calculate_blockrev(prog.u.buf32, prog.len/4);
         if (block_crc != prog.crc){
           upvar = block_crc;
           usbdfu_state = STATE_DFU_ERROR;
@@ -643,3 +644,24 @@ void sys_tick_handler()
 {
 	led_advance();
 }
+
+static uint32_t crc_calculate_blockrev(uint32_t *datap, int size)
+{
+    int i;
+    register uint32_t tmpdata;
+    for (i = 0; i < size; i++)
+    {
+        CRC_DR = revbit(datap[i]);
+    }
+    tmpdata = revbit(CRC_DR);
+    return tmpdata;
+}
+
+
+static uint32_t revbit(uint32_t data)
+{
+    register uint32_t retval;
+    asm("rbit %[result],%[input]": [result] "=r" (retval) : [input] "r" (data));
+    return retval;
+};
+
