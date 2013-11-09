@@ -53,7 +53,7 @@
 #define BUFFER_SIZE (2048 + 0*4) // Ctrl struct + 1 PAGE
 #define FLASH_START_ADDRESS	0x8002000
 #define FLASH_END_ADDRESS	0x803FFFF
-
+#define IN_FLASH_RANGE(x)	(((x) >= FLASH_START_ADDRESS) && ((x) <=FLASH_END_ADDRESS))
 /* Commands sent with wBlockNum == 0 as per ST implementation. */
 #define CMD_SETADDR	0x21
 #define CMD_ERASE	0x41
@@ -79,7 +79,7 @@ static enum dfu_state usbdfu_state = STATE_DFU_IDLE;
 static enum dfu_status usbdfu_status = DFU_STATUS_OK;
 
 static void gpio_init(void);
-static void gpio_uninit(void);
+//static void gpio_uninit(void);
 static bool gpio_force_bootloader(void);
 static void led_advance(void);
 static void led_set(int id, int on);
@@ -171,24 +171,25 @@ static uint8_t usbdfu_getstatus(uint32_t *bwPollTimeout)
     {
     case STATE_DFU_DNLOAD_SYNC:
         usbdfu_state = STATE_DFU_DNBUSY;
-        if (prog.blocknum != 0)
-            *bwPollTimeout = 70; /* 1 page write */
-        else
-        {
-            switch (*(uint32_t *) &prog.buf8[0])
-            {
-            case CMD_ERASE:
-                *bwPollTimeout = 80; /* min time for page erase */
-                break;
-            case CMD_NEXT_BLOCK_CRC:
-            case CMD_SETADDR:
-                *bwPollTimeout = 1; /* very fast */
-                break;
-            case CMD_RANGE_CRC:
-                *bwPollTimeout = 100;
-                break;
-            }
-        }
+        *bwPollTimeout = 100;
+//        if (prog.blocknum != 0)
+//            *bwPollTimeout = 70; /* 1 page write */
+//        else
+//        {
+//            switch (*(uint32_t *) &prog.buf8[0])
+//            {
+//            case CMD_ERASE:
+//                *bwPollTimeout = 80; /* min time for page erase */
+//                break;
+//            case CMD_NEXT_BLOCK_CRC:
+//            case CMD_SETADDR:
+//                *bwPollTimeout = 1; /* very fast */
+//                break;
+//            case CMD_RANGE_CRC:
+//                *bwPollTimeout = 100;
+//                break;
+//            }
+//        }
         return DFU_STATUS_OK;
 
     case STATE_DFU_MANIFEST_SYNC:
@@ -212,7 +213,7 @@ static void usbdfu_getstatus_complete(usbd_device *device,
 {
     int i;
     (void) req;
-
+    static bool gw_requested = false;
     switch (usbdfu_state)
     {
     case STATE_DFU_DNBUSY:
@@ -221,6 +222,24 @@ static void usbdfu_getstatus_complete(usbd_device *device,
         {
             ctrl_struct * ctrl;
             ctrl = (ctrl_struct*) prog.buf8;
+            if(gw_requested == false)
+			{
+            	if (!IN_FLASH_RANGE(ctrl->start))
+            	{
+
+					uint16_t node = (uint16_t)(ctrl->start>>16);
+					// we will gateway to CAN nodes
+					if(!gw_can_bl_request(node))
+					{
+						usbdfu_state = STATE_DFU_ERROR;
+						usbdfu_status = DFU_STATUS_ERR_TARGET;
+						return;
+					}else
+					{
+						gw_requested = true;
+					}
+            	}
+			}
             switch (ctrl->cmd)
             {
             case CMD_NEXT_BLOCK_CRC:
@@ -244,28 +263,42 @@ static void usbdfu_getstatus_complete(usbd_device *device,
                 }
                 else
                 { /* Out of range */
-                    usbdfu_state = STATE_DFU_ERROR;
+/*                    usbdfu_state = STATE_DFU_ERROR;
                     usbdfu_status = DFU_STATUS_ERR_ADDRESS;
-                    return;
+                    return;*/
+                	/* CRC is not implemented for the gateway */
                 }
                 break;
             case CMD_ERASE:
-                if ((ctrl->start < FLASH_START_ADDRESS)
-                                || (ctrl->start >= FLASH_END_ADDRESS))
+                if (!IN_FLASH_RANGE(ctrl->start))
                 {
-                    /* ERROR status instead of usb stall */
-                    usbdfu_state = STATE_DFU_ERROR;
-                    usbdfu_status = DFU_STATUS_ERR_ADDRESS;
-                    return;
-                }
+                	if(!gw_requested)
+                	{
+						/* ERROR status instead of usb stall */
+						usbdfu_state = STATE_DFU_ERROR;
+						usbdfu_status = DFU_STATUS_ERR_ADDRESS;
+						return;
+                	}else
+                	{
+                		if(!gw_can_erase_sector(ctrl->start))
+                		{
+    						/* ERROR status instead of usb stall */
+    						usbdfu_state = STATE_DFU_ERROR;
+    						usbdfu_status = DFU_STATUS_ERR_ERASE;
+    						return;
+                		}
+                	}
+                }else
+                {
 
-                flash_unlock();
-                led_set(1, 1);
-                flash_erase_page(ctrl->start);
-                //TODO: more than one page?
-                flash_lock();
-                led_set(1, 0);
-                prog.addr = ctrl->start;
+					flash_unlock();
+					//led_set(1, 1);
+					flash_erase_page(ctrl->start);
+					//TODO: more than one page?
+					flash_lock();
+					//led_set(1, 0);
+					prog.addr = ctrl->start;
+                }
                 break;
             case CMD_SETADDR:
                 prog.addr = ctrl->start;
@@ -277,6 +310,7 @@ static void usbdfu_getstatus_complete(usbd_device *device,
             /* compute CRC of received block, if not good, return
              * ERROR */
             uint32_t block_crc;
+            uint32_t baseaddr;
             crc_reset();
             block_crc = crc_calculate_blockrev((uint32_t*) prog.buf8,
                             prog.len / 4);
@@ -287,16 +321,36 @@ static void usbdfu_getstatus_complete(usbd_device *device,
                 usbdfu_status = DFU_STATUS_ERR_VERIFY;
                 break;
             }
-            flash_unlock();
-            led_set(1, 1);
-            uint32_t baseaddr = prog.addr + ((prog.blocknum - 2) * PAGE_SIZE);
-            for (i = 0; i < prog.len; i += 2)
+			baseaddr = prog.addr + ((prog.blocknum - 2) * PAGE_SIZE);
+            if(IN_FLASH_RANGE(prog.addr))
             {
-                flash_program_half_word(baseaddr + i,
-                                *(uint16_t*) (&prog.buf8[i]));
+				flash_unlock();
+				//led_set(1, 1);
+
+				for (i = 0; i < prog.len; i += 2)
+				{
+					flash_program_half_word(baseaddr + i,
+									*(uint16_t*) (&prog.buf8[i]));
+				}
+				//led_set(1, 0);
+				flash_lock();
+            }else
+            {
+            	if(gw_requested)
+            	{
+            		if(!gw_can_flash_program(baseaddr,prog.buf8,prog.len))
+					{
+                        usbdfu_state = STATE_DFU_ERROR;
+                        usbdfu_status = DFU_STATUS_ERR_PROG;
+                        break;
+					}
+            	}else
+            	{
+                    usbdfu_state = STATE_DFU_ERROR;
+                    usbdfu_status = DFU_STATUS_ERR_ADDRESS;
+                    break;
+            	}
             }
-            led_set(1, 0);
-            flash_lock();
         }
 
         /* We jump straight to dfuDNLOAD-IDLE,
@@ -386,9 +440,9 @@ static void gpio_init(void)
     rcc_peripheral_enable_clock(&RCC_AHBENR, RCC_AHBENR_OTGFSEN);
     /* Enable GPIOA, GPIOB, GPIOC, and AFIO clocks. */
     rcc_peripheral_enable_clock(&RCC_APB2ENR, RCC_APB2ENR_IOPAEN |
-    RCC_APB2ENR_IOPBEN |
-    RCC_APB2ENR_IOPCEN |
-    RCC_APB2ENR_AFIOEN);
+                                RCC_APB2ENR_IOPBEN |
+                                RCC_APB2ENR_IOPCEN |
+                                RCC_APB2ENR_AFIOEN);
     /* LED pins */
     for (io_ctr = 0; io_ctr < (sizeof(io_cfg) / sizeof(io_cfg[0])); io_ctr++)
     {
@@ -405,24 +459,24 @@ static void gpio_init(void)
 
 }
 
-static void gpio_uninit(void)
-{
-    int io_ctr;
-    /* Enable GPIOA, GPIOB, GPIOC, and AFIO clocks. */
-    for (io_ctr = 0; io_ctr < (sizeof(io_cfg) / sizeof(io_cfg[0])); io_ctr++)
-    {
-        gpio_set_mode(io_cfg[io_ctr].gpioport, GPIO_MODE_INPUT,
-        GPIO_CNF_INPUT_FLOAT, io_cfg[io_ctr].gpios);
-    }
-    /* USB detect */
-    gpio_set_mode(USBDETECT_PORT, GPIO_MODE_INPUT,
-    GPIO_CNF_INPUT_FLOAT, USBDETECT_PIN);
-
-    rcc_peripheral_disable_clock(&RCC_APB2ENR, RCC_APB2ENR_IOPAEN |
-    RCC_APB2ENR_IOPBEN |
-    RCC_APB2ENR_IOPCEN |
-    RCC_APB2ENR_AFIOEN);
-}
+//static void gpio_uninit(void)
+//{
+//    int io_ctr;
+//    /* Enable GPIOA, GPIOB, GPIOC, and AFIO clocks. */
+//    for (io_ctr = 0; io_ctr < (sizeof(io_cfg) / sizeof(io_cfg[0])); io_ctr++)
+//    {
+//        gpio_set_mode(io_cfg[io_ctr].gpioport, GPIO_MODE_INPUT,
+//        GPIO_CNF_INPUT_FLOAT, io_cfg[io_ctr].gpios);
+//    }
+//    /* USB detect */
+//    gpio_set_mode(USBDETECT_PORT, GPIO_MODE_INPUT,
+//    GPIO_CNF_INPUT_FLOAT, USBDETECT_PIN);
+//
+//    rcc_peripheral_disable_clock(&RCC_APB2ENR, RCC_APB2ENR_IOPAEN |
+//    RCC_APB2ENR_IOPBEN |
+//    RCC_APB2ENR_IOPCEN |
+//    RCC_APB2ENR_AFIOEN);
+//}
 
 static void led_set(int id, int on)
 {
@@ -470,7 +524,7 @@ int main(void)
     {
         if (!gpio_force_bootloader())
         {
-            gpio_uninit();
+//            gpio_uninit();
             /* Set vector table base address. */
             SCB_VTOR = APP_ADDRESS & 0xFFFF;
 
