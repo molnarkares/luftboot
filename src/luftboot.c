@@ -214,6 +214,7 @@ static void usbdfu_getstatus_complete(usbd_device *device,
     int i;
     (void) req;
     static bool gw_requested = false;
+    static bool gw_available = false;
     switch (usbdfu_state)
     {
     case STATE_DFU_DNBUSY:
@@ -222,24 +223,6 @@ static void usbdfu_getstatus_complete(usbd_device *device,
         {
             ctrl_struct * ctrl;
             ctrl = (ctrl_struct*) prog.buf8;
-            if(gw_requested == false)
-			{
-            	if (!IN_FLASH_RANGE(ctrl->start))
-            	{
-
-					uint16_t node = (uint16_t)(ctrl->start>>16);
-					// we will gateway to CAN nodes
-					if(!gw_can_bl_request(node))
-					{
-						usbdfu_state = STATE_DFU_ERROR;
-						usbdfu_status = DFU_STATUS_ERR_TARGET;
-						return;
-					}else
-					{
-						gw_requested = true;
-					}
-            	}
-			}
             switch (ctrl->cmd)
             {
             case CMD_NEXT_BLOCK_CRC:
@@ -272,23 +255,30 @@ static void usbdfu_getstatus_complete(usbd_device *device,
             case CMD_ERASE:
                 if (!IN_FLASH_RANGE(ctrl->start))
                 {
-                	if(!gw_requested)
-                	{
-						/* ERROR status instead of usb stall */
-						usbdfu_state = STATE_DFU_ERROR;
-						usbdfu_status = DFU_STATUS_ERR_ADDRESS;
-						return;
-                	}else
-                	{
-                		if(!gw_can_erase_sector(ctrl->start))
-                		{
-    						/* ERROR status instead of usb stall */
-    						usbdfu_state = STATE_DFU_ERROR;
-    						usbdfu_status = DFU_STATUS_ERR_ERASE;
-    						return;
-                		}
-                	}
-                }else
+                    if(gw_requested == false)
+                    {
+                        gw_requested = true;
+                        uint16_t node = (uint16_t)(ctrl->start>>16);
+                        // we will gateway to CAN nodes
+                        if(!gw_can_bl_request(node))
+                        {
+                            usbdfu_state = STATE_DFU_ERROR;
+                            usbdfu_status = DFU_STATUS_ERR_TARGET;
+                            return;
+                        }else
+                        {
+                            gw_available = true;
+                        }
+                    }
+                    if(!gw_available || !gw_can_erase_sector(ctrl->start))
+                    {
+                        /* ERROR status instead of usb stall */
+                        usbdfu_state = STATE_DFU_ERROR;
+                        usbdfu_status = DFU_STATUS_ERR_ERASE;
+                        return;
+                    }
+                }
+                else
                 {
 
 					flash_unlock();
@@ -336,7 +326,7 @@ static void usbdfu_getstatus_complete(usbd_device *device,
 				flash_lock();
             }else
             {
-            	if(gw_requested)
+            	if(gw_available)
             	{
             		if(!gw_can_flash_program(baseaddr,prog.buf8,prog.len))
 					{
