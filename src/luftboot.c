@@ -84,7 +84,7 @@ static bool gpio_force_bootloader(void);
 static void led_advance(void);
 static void led_set(int id, int on);
 
-static char * get_dev_unique_id(char *serial_no);
+void get_dev_unique_id(char *serial_no);
 static uint8_t usbdfu_getstatus(uint32_t *bwPollTimeout);
 static void usbdfu_getstatus_complete(usbd_device *device,
                 struct usb_setup_data *req);
@@ -161,7 +161,8 @@ USB_DT_CONFIGURATION, .wTotalLength = 0, .bNumInterfaces = 1,
 static char serial_no[24 + 8];
 
 static const char *usb_strings[] =
-{ "Lyorak", "BME UAV", "Papilot " VERSION, serial_no,
+{
+"Lyorak", "BME UAV", "Papilot " VERSION, serial_no,
 /* This string is used by ST Microelectronics' DfuSe utility */
 "@Internal Flash   /0x08000000/4*002Ka,124*002Kg" };
 
@@ -172,24 +173,6 @@ static uint8_t usbdfu_getstatus(uint32_t *bwPollTimeout)
     case STATE_DFU_DNLOAD_SYNC:
         usbdfu_state = STATE_DFU_DNBUSY;
         *bwPollTimeout = 200;
-//        if (prog.blocknum != 0)
-//            *bwPollTimeout = 70; /* 1 page write */
-//        else
-//        {
-//            switch (*(uint32_t *) &prog.buf8[0])
-//            {
-//            case CMD_ERASE:
-//                *bwPollTimeout = 80; /* min time for page erase */
-//                break;
-//            case CMD_NEXT_BLOCK_CRC:
-//            case CMD_SETADDR:
-//                *bwPollTimeout = 1; /* very fast */
-//                break;
-//            case CMD_RANGE_CRC:
-//                *bwPollTimeout = 100;
-//                break;
-//            }
-//        }
         return DFU_STATUS_OK;
 
     case STATE_DFU_MANIFEST_SYNC:
@@ -246,9 +229,6 @@ static void usbdfu_getstatus_complete(usbd_device *device,
                 }
                 else
                 { /* Out of range */
-/*                    usbdfu_state = STATE_DFU_ERROR;
-                    usbdfu_status = DFU_STATUS_ERR_ADDRESS;
-                    return;*/
                 	/* CRC is not implemented for the gateway */
                 }
                 break;
@@ -449,24 +429,6 @@ static void gpio_init(void)
 
 }
 
-//static void gpio_uninit(void)
-//{
-//    int io_ctr;
-//    /* Enable GPIOA, GPIOB, GPIOC, and AFIO clocks. */
-//    for (io_ctr = 0; io_ctr < (sizeof(io_cfg) / sizeof(io_cfg[0])); io_ctr++)
-//    {
-//        gpio_set_mode(io_cfg[io_ctr].gpioport, GPIO_MODE_INPUT,
-//        GPIO_CNF_INPUT_FLOAT, io_cfg[io_ctr].gpios);
-//    }
-//    /* USB detect */
-//    gpio_set_mode(USBDETECT_PORT, GPIO_MODE_INPUT,
-//    GPIO_CNF_INPUT_FLOAT, USBDETECT_PIN);
-//
-//    rcc_peripheral_disable_clock(&RCC_APB2ENR, RCC_APB2ENR_IOPAEN |
-//    RCC_APB2ENR_IOPBEN |
-//    RCC_APB2ENR_IOPCEN |
-//    RCC_APB2ENR_AFIOEN);
-//}
 
 static void led_set(int id, int on)
 {
@@ -514,7 +476,6 @@ int main(void)
     {
         if (!gpio_force_bootloader())
         {
-//            gpio_uninit();
             /* Set vector table base address. */
             SCB_VTOR = APP_ADDRESS & 0xFFFF;
 
@@ -551,8 +512,7 @@ int main(void)
     }
 }
 
-static char *
-get_dev_unique_id(char *s)
+void get_dev_unique_id(char *s)
 {
     volatile uint8_t *unique_id = (volatile uint8_t *) 0x1FFFF7E8;
     int i;
@@ -576,7 +536,6 @@ get_dev_unique_id(char *s)
             s[i + 8] += 'A' - '9' - 1;
         }
     }
-    return s;
 }
 
 void sys_tick_handler()
