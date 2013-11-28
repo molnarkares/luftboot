@@ -171,7 +171,7 @@ static uint8_t usbdfu_getstatus(uint32_t *bwPollTimeout)
     {
     case STATE_DFU_DNLOAD_SYNC:
         usbdfu_state = STATE_DFU_DNBUSY;
-        *bwPollTimeout = 100;
+        *bwPollTimeout = 200;
 //        if (prog.blocknum != 0)
 //            *bwPollTimeout = 70; /* 1 page write */
 //        else
