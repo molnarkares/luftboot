@@ -91,7 +91,7 @@ static void usbdfu_getstatus_complete(usbd_device *device,
 static int usbdfu_control_request(usbd_device *device,
                 struct usb_setup_data *req, uint8_t **buf, uint16_t *len,
                 void (**complete)(usbd_device *device,
-                                struct usb_setup_data *req));
+                struct usb_setup_data *req));
 static uint32_t crc_calculate_blockrev(uint32_t *datap, int size);
 static uint32_t revbit(uint32_t data);
 
