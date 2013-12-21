@@ -31,9 +31,9 @@
 
 #define CAN_REQUEST_ID	0x67D
 #define CAN_RESPONSE_ID	0x5FD
-#define CAN_BL_BROADCAST_ID	0x1
-#define CAN_BL_RESPONSE_ID	0x2
-#define CAN_BRD_TIMEOUT	(10*9000)	// 10 ms
+#define CAN_BL_BROADCAST_ID	0x20
+#define CAN_BL_RESPONSE_ID	0x120
+#define CAN_BRD_TIMEOUT	(50*9000)	// 50 ms
 #define CAN_GW_TIMEOUT 	(50*9000)	// 50 ms
 
 #define NODE_SECTOR_SIZE	(4*1024)
@@ -131,10 +131,15 @@ void gw_can_init(uint32_t baud)
  * 5. After that it performs Flash command unlock on the node
  *
  */
+bool can_bl_requested = false;
 
 bool gw_can_bl_request(uint16_t node)
 {
 	can_msg_t tx_frame,rx_frame;
+	if(can_bl_requested == true)
+	{
+		return true;
+	}
 
 	/* start on 1Mbps and send commands not the actove nodes */
 	gw_can_init(1000);
@@ -144,17 +149,15 @@ bool gw_can_bl_request(uint16_t node)
 	 */
 	tx_frame.id = CAN_BL_BROADCAST_ID;
 	tx_frame.length = 8;
-	*(uint32_t*)&tx_frame.data[0]= 0x00000020;
-	*(uint16_t*)&tx_frame.data[4]= node;
-	*(uint16_t*)&tx_frame.data[6]= 100;
+	*(uint8_t*)&tx_frame.data[0]= node;
+	*(uint8_t*)&tx_frame.data[1]= 0x20;
 
 	rx_frame.id = CAN_BL_RESPONSE_ID;
 	rx_frame.length = 8;
-	*(uint32_t*)&tx_frame.data[0]= 0x00000021;
-	*(uint16_t*)&tx_frame.data[4]= node;
-	*(uint16_t*)&tx_frame.data[6]= 100;
+	*(uint8_t*)&rx_frame.data[0]= node;
+	*(uint8_t*)&rx_frame.data[1]= 0x21;
 
-	if(gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,true,true,0xff)) {
+	if(gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,true,true,0x03)) {
 		uint32_t timeout_val,now;
 		/* wait for 10ms to enable time for all nodes to make the transition to 100kbps*/
 		timeout_val = systick_get_value();
@@ -192,19 +195,9 @@ bool gw_can_bl_request(uint16_t node)
 	{
 		return false;
 	}
-	/* unlock request */
-	*(uint32_t*)(&tx_frame.data[0]) = 0x0050002b;
-	*(uint32_t*)(&tx_frame.data[4]) = 0x00005a5a;
-	*(uint32_t*)(&rx_frame.data[0]) = 0x00500060;
-	*(uint32_t*)(&rx_frame.data[4]) = 0;
-
-	if(gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000101))
-	{
-			/* unlock request ACKed */
-			return true;
-	}
-
-	return false;
+	/* unlock request ACKed */
+	can_bl_requested = true;
+	return true;
 }
 
 /* interrupt handler for CAN frame reception.
@@ -303,7 +296,7 @@ bool gw_can_erase_sector(uint32_t address)
 	/* sectors are erased one by one */
 	uint32_t sector;
 
-	/* sector size of NODE and STM32 is differnt:
+	/* sector size of NODE and STM32 is different:
 	 * STM32 is using 2kBytes while
 	 * LPC11C is using 4K sectors
 	 * Therefore we accept erase requests for the node
@@ -315,11 +308,21 @@ bool gw_can_erase_sector(uint32_t address)
 		//mimic successful erase
 		return true;
 	}
-	sector = address/NODE_SECTOR_SIZE;
+	sector = (address/NODE_SECTOR_SIZE) & 0xff;
 	tx_frame.id = CAN_REQUEST_ID;
 	tx_frame.length = 8;
 	//rx_frame.id = CAN_RESPONSE_ID;
 	rx_frame.length = 8;
+	/* unlock request */
+	*(uint32_t*)(&tx_frame.data[0]) = 0x0050002b;
+	*(uint32_t*)(&tx_frame.data[4]) = 0x00005a5a;
+	*(uint32_t*)(&rx_frame.data[0]) = 0x00500060;
+	*(uint32_t*)(&rx_frame.data[4]) = 0;
+
+	if(!gw_can_sendrec_w(&tx_frame,&rx_frame,CAN_GW_TIMEOUT,false,true,0b00000101))
+	{
+			return false;
+	}
 
 	/* sector erase is a two step process:
 	 * 1. flash prepare command
@@ -368,6 +371,7 @@ bool gw_can_erase_sector(uint32_t address)
 }
 bool gw_can_flash_program(uint32_t address, uint8_t* data, uint16_t len)
 {
+	const uint16_t allowed_len[4] = {256, 512, 1024,4096};
 	can_msg_t tx_frame,rx_frame;
 	int idx = 0;
 	int toggle = 0;
@@ -379,7 +383,21 @@ bool gw_can_flash_program(uint32_t address, uint8_t* data, uint16_t len)
 	tx_frame.length = 8;
 	//rx_frame.id = CAN_RESPONSE_ID;
 	rx_frame.length = 8;
-
+	if((len == 0) || (len > 4096)) {
+		return false;
+	}
+	/* only 256,512,1024 or 4096 bytes are allowed */
+	for(idx = 0; idx <4 ;idx++) {
+		if(len < allowed_len[idx]) {
+			break;
+		}
+	}
+	len = allowed_len[idx];
+	for(idx = len_save; idx < len;idx++ ) {
+		data[idx] = 0xff;
+	}
+	idx = 0;
+	len_save = len;
 	/* flash prepare write command */
 	*(uint32_t*)(&tx_frame.data[0]) = 0x0050202b;
 
