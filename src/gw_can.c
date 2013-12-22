@@ -388,7 +388,7 @@ bool gw_can_flash_program(uint32_t address, uint8_t* data, uint16_t len)
 	}
 	/* only 256,512,1024 or 4096 bytes are allowed */
 	for(idx = 0; idx <4 ;idx++) {
-		if(len < allowed_len[idx]) {
+		if(len <= allowed_len[idx]) {
 			break;
 		}
 	}
