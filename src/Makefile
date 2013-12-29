@@ -35,7 +35,7 @@ CFLAGS += -Os -g3 -Istm32/include -mcpu=cortex-m3 -mthumb -msoft-float -DSTM32F1
 	-I$(LIBOPENCM3)/include --function-sections --data-sections \
 	-DVERSION="\"$(VERSION)\"" -DDEV_SERIAL="\"$(DEV_SERIAL)\""
 LDFLAGS_BOOT = -lopencm3_stm32f1 -Wl,--defsym,_stack=0x20005000 \
-	-Wl,-T,luftboot.ld $(SPECS) -nostartfiles -lc -Wl,-Map=mapfile \
+	-Wl,-T,luftboot.ld $(SPECS) -lnosys -nostartfiles -lc -Wl,-Map=mapfile \
 	-mthumb -mcpu=cortex-m3 -mfix-cortex-m3-ldrd -msoft-float -L$(LIBOPENCM3)/lib \
 	-Wl,--gc-sections
 LDFLAGS_BOOT += -Wl,--section-start=.devserial=0x8001FF0
