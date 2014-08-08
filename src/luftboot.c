@@ -21,9 +21,9 @@
 #include <stdint.h>
 #include <string.h>
 #include <libopencm3/cm3/systick.h>
-#include <libopencm3/stm32/f1/rcc.h>
-#include <libopencm3/stm32/f1/gpio.h>
-#include <libopencm3/stm32/f1/flash.h>
+#include <libopencm3/stm32/rcc.h>
+#include <libopencm3/stm32/gpio.h>
+#include <libopencm3/stm32/flash.h>
 #include <libopencm3/cm3/scb.h>
 #include <libopencm3/usb/usbd.h>
 #include <libopencm3/usb/dfu.h>
@@ -487,6 +487,10 @@ int main(void)
     rcc_clock_setup_in_hse_8mhz_out_72mhz();
 
     rcc_peripheral_enable_clock(&RCC_AHBENR, RCC_AHBENR_OTGFSEN);
+	systick_set_clocksource(STK_CSR_CLKSOURCE_AHB_DIV8);
+	systick_set_reload(900000);
+	systick_interrupt_enable();
+	systick_counter_enable();
 
     /* Enable crc engine for integrity verification */
     rcc_peripheral_enable_clock(&RCC_AHBENR, RCC_AHBENR_CRCEN);
